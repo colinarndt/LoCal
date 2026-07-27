@@ -1,0 +1,105 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Discover · Social Calendar</title>
+<style>
+ :root{--bg:#fbfaf8;--card:#fff;--ink:#1a1a1a;--muted:#6b6b6b;--line:#e5e2dd;--accent:#b4593a;}
+ @media (prefers-color-scheme:dark){:root{--bg:#16161a;--card:#1f1f24;--ink:#ececee;
+   --muted:#9a9aa2;--line:#2e2e35;--accent:#e0805c;}}
+ *{box-sizing:border-box}
+ body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+ .wrap{max-width:820px;margin:0 auto;padding:16px}
+ header{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px}
+ h1{font-size:1.35rem;margin:0} a{color:var(--accent)}
+ .lead{color:var(--muted);font-size:.9rem;margin:6px 0 18px}
+ .c{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:8px;
+    display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
+ .h{font-weight:600} .h a{color:inherit;text-decoration:none}
+ .h a:hover{color:var(--accent);text-decoration:underline}
+ .h a::after{content:" \2197";font-size:.78em;color:var(--muted)} .why{color:var(--muted);font-size:.85rem;margin-top:4px}
+ .handle{color:var(--muted);font-size:.85rem}
+ .n{font-size:.75rem;border:1px solid var(--line);border-radius:999px;padding:1px 8px;color:var(--muted)}
+ button{font:inherit;font-size:.85rem;padding:5px 12px;border-radius:7px;border:1px solid var(--line);
+        background:var(--bg);color:var(--ink);cursor:pointer}
+ button.ok{background:var(--accent);color:#fff;border-color:transparent}
+ form{display:inline} .empty{color:var(--muted);text-align:center;padding:40px 0}
+ .who{display:flex;gap:11px;align-items:flex-start;min-width:0}
+ .av{width:44px;height:44px;border-radius:50%;object-fit:cover;flex-shrink:0;
+   border:1px solid var(--line);background:var(--line)}
+ .av.sm{width:20px;height:20px;border-radius:50%}
+ .av.ph{display:inline-flex;align-items:center;justify-content:center;
+   color:var(--muted);font-weight:600;font-size:1.1rem}
+ .add{display:flex;gap:8px;margin:14px 0 6px}
+ .add input{flex:1;font:inherit;padding:8px 11px;border-radius:8px;border:1px solid var(--line);
+   background:var(--card);color:var(--ink)}
+ .msg{font-size:.85rem;color:var(--accent);margin:4px 0}
+ .msg.warn{color:#c0392b}
+ .polled{margin:10px 0 18px;font-size:.87rem;color:var(--muted)}
+ .polled summary{cursor:pointer}
+ .plist{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+ .ptag{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);
+   border-radius:999px;padding:3px 5px 3px 11px;font-size:.82rem;color:var(--ink)}
+ .ptag button{border:0;background:none;color:var(--muted);cursor:pointer;font-size:1rem;
+   line-height:1;padding:0 4px}
+ .ptag form{display:inline}
+ footer{margin-top:28px;border-top:1px solid var(--line);padding-top:12px;color:var(--muted);font-size:.85rem}
+</style></head><body><div class="wrap">
+<header><h1>Discover accounts</h1><a href="/">← calendar</a></header>
+
+<form class="add" method="post" action="/discover/add">
+  <input name="handle" placeholder="add a handle, e.g. snugrock or a profile URL"
+         autocapitalize="none" autocorrect="off" spellcheck="false" required>
+  <button class="ok" type="submit">add to rotation</button>
+</form>
+{% if added %}<p class="msg">Added @{{ added }} — it will be polled on the next run.</p>{% endif %}
+{% if err %}<p class="msg warn">That does not look like a valid Instagram handle.</p>{% endif %}
+
+<details class="polled">
+  <summary>{{ polled|length }} accounts currently polled</summary>
+  <div class="plist">
+    {% for a in polled %}
+      <span class="ptag">{% if a['avatar_file'] %}
+          <img class="av sm" src="/avatar/{{ a['avatar_file'] }}" alt="" loading="lazy">
+        {% endif %}{{ a['display_name'] or a['handle'] }}
+        <form method="post" action="/discover/{{ a['handle'] }}/reject">
+          <button type="submit" title="stop polling">&times;</button></form>
+      </span>
+    {% endfor %}
+  </div>
+</details>
+<p class="lead">
+  Accounts appearing on posts we already scrape, ranked by how many real events they produced.
+  Nothing is added automatically — approving puts an account into the poll rotation
+  ({{ polled|length }} currently polled).
+</p>
+{% for c in queue %}
+  <div class="c">
+    <div class="who">
+      {% if c['avatar_file'] %}
+        <img class="av" src="/avatar/{{ c['avatar_file'] }}" alt="" loading="lazy">
+      {% else %}
+        <span class="av ph">{{ (c['display_name'] or c['handle'])[:1]|upper }}</span>
+      {% endif %}
+    <div>
+      <div class="h">
+        <a href="https://www.instagram.com/{{ c['handle'] }}/" target="_blank" rel="noopener"
+           >{{ c['display_name'] or c['handle'] }}</a>
+        <span class="n">{{ c['events'] }} event{{ '' if c['events']==1 else 's' }}</span>
+        <span class="n">{{ c['discovery_source'] }}</span>
+      </div>
+      <div class="handle">@{{ c['handle'] }}</div>
+      <div class="why">{{ c['proposed_reason'] }}</div>
+    </div>
+    </div>
+    <div>
+      <form method="post" action="/discover/{{ c['handle'] }}/approve">
+        <button class="ok" type="submit">approve</button></form>
+      <form method="post" action="/discover/{{ c['handle'] }}/reject">
+        <button type="submit">reject</button></form>
+    </div>
+  </div>
+{% else %}
+  <p class="empty">No candidates awaiting review.</p>
+{% endfor %}
+<footer>Approved accounts are written to the database, not to accounts.txt —
+  <code>run-once</code> reads the rotation from there.</footer>
+</div></body></html>

@@ -1,0 +1,24 @@
+# Phase 0 seed accounts — Charlotte, NC.
+#
+# !! UNVERIFIED !! These handles are from model recall, not a live check.
+# Open each one in a browser and confirm it exists and still posts events
+# BEFORE running fetch.py — every dead handle is a wasted paid request.
+# Fix or delete any that are wrong, then delete this warning.
+#
+# One handle per line, no leading @. Blank lines and # comments ignored.
+
+# --- music venues ---
+#snugrock              # Snug Harbor
+neighborhoodtheatre   # Neighborhood Theatre
+themilestoneclub      # The Milestone
+petrasbar             # Petra's
+eveningmuse           # The Evening Muse
+visulite              # Visulite Theatre
+amossouthend          # Amos' Southend
+
+# --- comedy ---
+comedyzoneclt         # The Comedy Zone Charlotte
+
+# --- mixed use / markets / food ---
+campnorthend          # Camp North End
+optimisthallclt          # Optimist Hall

@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Social Calendar</title>
+<style>
+  :root {
+    --bg:#fbfaf8; --card:#fff; --ink:#1a1a1a; --muted:#6b6b6b; --line:#e5e2dd;
+    --accent:#b4593a; --warn:#8a6d00; --warn-bg:#fdf6e0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16161a; --card:#1f1f24; --ink:#ececee; --muted:#9a9aa2;
+            --line:#2e2e35; --accent:#e0805c; --warn:#e8c34a; --warn-bg:#2a2413; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 -apple-system,
+         BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:820px; margin:0 auto; padding:16px; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           gap:12px; flex-wrap:wrap; margin-bottom:4px; }
+  h1 { font-size:1.35rem; margin:0; letter-spacing:-0.01em; }
+  .count { color:var(--muted); font-size:.9rem; }
+  a { color:var(--accent); }
+
+  form.filters { background:var(--card); border:1px solid var(--line); border-radius:10px;
+                 padding:12px; margin:12px 0 20px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .row + .row { margin-top:8px; }
+  select, input[type=date], button { font:inherit; padding:6px 9px; border-radius:7px;
+    border:1px solid var(--line); background:var(--bg); color:var(--ink); }
+  button { cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border-color:transparent; }
+  .chip { display:inline-flex; align-items:center; padding:6px 13px;
+          border:1px solid var(--line); border-radius:999px; font-size:.85rem;
+          background:var(--bg); cursor:pointer; user-select:none;
+          transition:background .12s, border-color .12s, color .12s; }
+  .chip input { position:absolute; opacity:0; width:0; height:0; }
+  .chip:hover { border-color:var(--accent); }
+  .chip:has(input:checked) { background:var(--accent); border-color:transparent; color:#fff; }
+
+  .setup { background:var(--warn-bg); color:var(--warn); border-radius:8px;
+           padding:10px 12px; font-size:.88rem; margin-top:12px; }
+  .setup code { background:rgba(128,128,128,.15); border-radius:4px; padding:1px 5px; }
+  .setup a { color:inherit; }
+
+  .views { display:flex; gap:6px; margin:10px 0 0; }
+  .views a { font-size:.85rem; padding:5px 14px; border:1px solid var(--line);
+             border-radius:999px; text-decoration:none; color:var(--muted); }
+  .views a.on { background:var(--accent); border-color:transparent; color:#fff; }
+
+  .mnav { display:flex; align-items:center; gap:14px; margin:18px 0 10px; }
+  .mnav strong { font-size:1.05rem; }
+  .mnav a { text-decoration:none; font-size:1.1rem; }
+  .mnav .mtoday { margin-left:auto; font-size:.85rem; }
+
+  .cal { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:3px; }
+  .cal-h { font-size:.7rem; font-weight:700; text-transform:uppercase; color:var(--muted);
+           text-align:center; letter-spacing:.06em; padding-bottom:2px; }
+  .cal-d { background:var(--card); border:1px solid var(--line); border-radius:7px;
+           min-height:58px; padding:4px; font-size:.78rem; color:inherit;
+           text-decoration:none; display:block; overflow:hidden; }
+  .cal-d.out { opacity:.42; }
+  .cal-d.now { border-color:var(--accent); }
+  .cal-d.has:hover { border-color:var(--accent); }
+  .dnum { display:block; font-size:.72rem; color:var(--muted); text-align:right; }
+  .cal-d.now .dnum { color:var(--accent); font-weight:700; }
+  /* Phone: a title cannot survive a 14%-wide column, so cells become counts and
+     the day list underneath does the reading. */
+  .cnt { display:block; margin:5px auto 0; width:22px; height:22px; line-height:22px;
+         border-radius:999px; background:var(--accent); color:#fff; font-size:.72rem;
+         font-weight:600; text-align:center; }
+  .titles { display:none; }
+  @media (min-width:700px) {
+    .cal-d { min-height:96px; }
+    .cnt { display:none; }
+    .titles { display:block; }
+    .mini { display:block; font-size:.7rem; line-height:1.3; margin-top:2px;
+            padding:1px 4px; border-radius:4px; background:var(--bg);
+            border-left:2px solid var(--accent); white-space:nowrap;
+            overflow:hidden; text-overflow:ellipsis; }
+    .mini.review { border-left-color:var(--warn); }
+    .mini b { font-weight:600; }
+    .more { display:block; font-size:.68rem; color:var(--muted); margin-top:2px; }
+  }
+
+  .day { margin:22px 0 8px; font-size:.78rem; font-weight:700; text-transform:uppercase;
+         letter-spacing:.08em; color:var(--muted); position:sticky; top:0;
+         background:var(--bg); padding:6px 0; }
+  .ev { background:var(--card); border:1px solid var(--line); border-radius:10px;
+        padding:12px 14px; margin-bottom:8px; }
+  .ev.review { border-left:3px solid var(--warn); }
+  .ev h2 { margin:0 0 3px; font-size:1rem; font-weight:600; line-height:1.35; }
+  .ev h2 a { color:inherit; text-decoration:none; }
+  .ev h2 a:hover { color:var(--accent); text-decoration:underline; }
+  .ev h2 a::after { content:" \2197"; font-size:.78em; color:var(--muted); }
+  .ev-body { display:flex; gap:14px; align-items:flex-start; justify-content:space-between; }
+  .ev-main { min-width:0; flex:1; }
+  .meta .t { color:var(--ink); font-weight:600; }
+  .meta { color:var(--muted); font-size:.87rem; display:flex; flex-wrap:wrap; gap:4px 10px; }
+  .badge { font-size:.72rem; padding:1px 7px; border-radius:999px; border:1px solid var(--line); }
+  .review-note { margin-top:7px; font-size:.82rem; color:var(--warn);
+                 background:var(--warn-bg); padding:6px 9px; border-radius:6px; }
+  .actions { margin-top:9px; display:flex; gap:6px; flex-wrap:wrap; }
+  /* desktop: park the controls on the right instead of under the text */
+
+  .actions button { font-size:.8rem; padding:4px 10px; }
+  .actions form { display:inline; }
+  .empty { text-align:center; color:var(--muted); padding:48px 0; }
+  .dist { font-size:.85rem; color:var(--muted); }
+  .dist input[type=range] { accent-color:var(--accent); flex:1; min-width:120px; max-width:200px; }
+  .dist #rout { font-weight:600; color:var(--ink); min-width:1.4em; text-align:right; }
+  .dist .hint { font-size:.78rem; opacity:.75; }
+  .warnmsg { font-size:.82rem; color:var(--warn); background:var(--warn-bg);
+             padding:6px 9px; border-radius:6px; }
+  .hood { border-color:var(--accent); color:var(--accent); }
+  .thumb { width:84px; height:84px; object-fit:cover; border-radius:8px;
+           border:1px solid var(--line); cursor:zoom-in; flex-shrink:0;
+           background:var(--line); }
+  @media (min-width:620px) { .thumb { width:104px; height:104px; } }
+  .actions { margin-top:9px; }
+  #lb { position:fixed; inset:0; background:rgba(0,0,0,.86); display:none;
+        align-items:center; justify-content:center; z-index:50; padding:20px; }
+  #lb.on { display:flex; }
+  .lb-inner { display:flex; flex-direction:column; background:var(--card);
+              border-radius:12px; overflow:hidden; max-width:1000px; width:100%;
+              max-height:90vh; }
+  .lb-img { background:#000; display:flex; align-items:center; justify-content:center; }
+  #lb img { max-width:100%; max-height:46vh; object-fit:contain; display:block; }
+  .lb-text { padding:14px 16px; overflow-y:auto; color:var(--ink); }
+  .lb-text h3 { margin:0 0 4px; font-size:1.02rem; line-height:1.35; }
+  .lb-meta { color:var(--muted); font-size:.87rem; margin-bottom:10px; }
+  /* the caption is the point of this pane -- keep the poster's line breaks */
+  .lb-cap { white-space:pre-wrap; font-size:.9rem; line-height:1.5;
+            border-top:1px solid var(--line); padding-top:10px; }
+  .lb-link { display:inline-block; margin-top:12px; font-size:.85rem; }
+  @media (min-width:760px) {
+    .lb-inner { flex-direction:row; }
+    .lb-img { flex:1 1 58%; min-width:0; }
+    #lb img { max-height:90vh; }
+    .lb-text { flex:1 1 42%; max-width:420px; }
+  }
+  #lb .x { position:absolute; top:12px; right:16px; color:#eee; font-size:2rem;
+           line-height:1; cursor:pointer; background:none; border:0; }
+  footer { margin:36px 0 12px; color:var(--muted); font-size:.85rem;
+           border-top:1px solid var(--line); padding-top:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Social Calendar</h1>
+  <span class="count">
+    {# calendar totals cover the whole grid, spill days included -- not just the month #}
+    {{ total }} event{{ '' if total == 1 else 's' }}{% if view == 'calendar' %} in view{% endif %}
+    {% if review_count %} · <a href="?{{ query_with(args, review='1') }}">{{ review_count }} need review</a>{% endif %}
+    {% if pending_count %} · <a href="/discover">{{ pending_count }} accounts to review</a>{% endif %}
+  </span>
+</header>
+
+{% if not configured %}
+  <div class="setup">
+    <strong>Not set up yet.</strong> You're seeing the example city ({{ cfg['city'] }}).
+    Run <code>python -m social_calendar.cli init</code> to set your city and API keys,
+    or <a href="/settings">change the location here</a>.
+  </div>
+{% endif %}
+
+<nav class="views">
+  <a class="{% if view != 'calendar' %}on{% endif %}"
+     href="?{{ query_with(args, view=None, month=None) }}">list</a>
+  <a class="{% if view == 'calendar' %}on{% endif %}"
+     href="?{{ query_with(args, view='calendar', month=args.get('month') or today[:7]) }}">calendar</a>
+</nav>
+
+<form class="filters" method="get" id="f">
+  {% if view == 'calendar' %}
+    <input type="hidden" name="view" value="calendar">
+    <input type="hidden" name="month" value="{{ args.get('month') }}">
+  {% endif %}
+  <div class="row">
+    {% for c in categories %}
+      <label class="chip">
+        <input type="checkbox" name="category" value="{{ c }}"
+               {% if c in args.getlist('category') %}checked{% endif %}>{{ c }}
+      </label>
+    {% endfor %}
+  </div>
+  <div class="row">
+    <select name="hood">
+      <option value="">all neighborhoods</option>
+      {% for h in hoods %}
+        <option value="{{ h['neighborhood'] }}" {% if args.get('hood') == h['neighborhood'] %}selected{% endif %}>
+          {{ h['neighborhood'] }} ({{ h['n'] }})</option>
+      {% endfor %}
+    </select>
+    <select name="venue">
+      <option value="">all venues</option>
+      {% for v in venues %}
+        <option value="{{ v['venue_key'] }}" {% if args.get('venue') == v['venue_key'] %}selected{% endif %}>
+          {{ v['label'] }} ({{ v['n'] }})</option>
+      {% endfor %}
+    </select>
+    <select name="account">
+      <option value="">all accounts</option>
+      {% for a in accounts %}
+        <option value="{{ a['handle'] }}" {% if args.get('account') == a['handle'] %}selected{% endif %}>
+          @{{ a['handle'] }}</option>
+      {% endfor %}
+    </select>
+    <select name="when">
+      <option value="upcoming" {% if args.get('when','upcoming')=='upcoming' %}selected{% endif %}>upcoming</option>
+      <option value="all" {% if args.get('when')=='all' %}selected{% endif %}>all dates</option>
+    </select>
+    <input type="date" name="until" value="{{ args.get('until','') }}" title="through">
+  </div>
+  <div class="row dist">
+    <label for="zip">within</label>
+    <output id="rout">{{ args.get('radius','5') }}</output><span>mi of</span>
+    <input type="range" name="radius" id="radius" min="1" max="25" step="1"
+           value="{{ args.get('radius','5') }}"
+           oninput="document.getElementById('rout').textContent=this.value">
+    <input type="text" name="zip" id="zip" inputmode="numeric" pattern="[0-9]{5}"
+           maxlength="5" placeholder="zip" value="{{ args.get('zip','') }}" size="6">
+    <span class="hint">leave the zip blank to ignore distance</span>
+  </div>
+  {% if zip_failed %}
+    <div class="row"><span class="warnmsg">That zip code could not be located — showing
+      unfiltered results rather than an empty page.</span></div>
+  {% endif %}
+  <div class="row">
+    <label class="chip"><input type="checkbox" name="confirmed" value="1"
+      {% if args.get('confirmed')=='1' %}checked{% endif %}> confirmed only</label>
+    <label class="chip"><input type="checkbox" name="review" value="1"
+      {% if args.get('review')=='1' %}checked{% endif %}> needs review</label>
+    <button class="primary" type="submit">Filter</button>
+    <a href="/{% if view == 'calendar' %}?view=calendar{% endif %}"><button type="button">Reset</button></a>
+  </div>
+</form>
+
+{% macro card(e, when_label) %}
+    <article class="ev {% if e['needs_review'] %}review{% endif %}">
+     <div class="ev-body">
+      <div class="ev-main">
+      <h2>
+        {% if e['permalink'] %}
+          <a href="{{ e['permalink'] }}" target="_blank" rel="noopener"
+             title="open the original post">{{ e['title'] or '(untitled)' }}</a>
+        {% else %}{{ e['title'] or '(untitled)' }}{% endif %}
+      </h2>
+      <div class="meta">
+        {% if e['start_time_known'] and e['starts_at']|clock %}
+          <span class="t">{{ e['starts_at']|clock }}</span>
+        {% else %}<span>time TBA</span>{% endif %}
+        {% if e['venue_name'] %}<span>{{ e['venue_name'] }}</span>{% endif %}
+        {% if e['price_text'] %}<span>{{ e['price_text'] }}</span>{% endif %}
+        {% if e['neighborhood'] %}<span class="badge hood">{{ e['neighborhood'] }}</span>{% endif %}
+        {% if e['distance'] is defined %}
+          <span class="badge">{{ '%.1f'|format(e['distance']) }} mi</span>{% endif %}
+        {% if e['category'] %}<span class="badge">{{ e['category'] }}</span>{% endif %}
+        {% if e['occurrence_of'] %}<span class="badge">recurring</span>{% endif %}
+        {% if e['source_count'] > 1 %}
+          <span class="badge">{{ e['source_count'] }} posts</span>{% endif %}
+        {% if e['is_confirmed'] %}<span class="badge">✓ confirmed</span>{% endif %}
+      </div>
+      {% if e['needs_review'] %}
+        <div class="review-note">{{ e['review_reason'] or 'flagged' }}</div>
+      {% endif %}
+      <div class="actions">
+        <form method="post" action="/event/{{ e['id'] }}/confirm">
+          <button type="submit">{{ 'unconfirm' if e['is_confirmed'] else 'confirm' }}</button></form>
+        <form method="post" action="/event/{{ e['id'] }}/hide">
+          <button type="submit">hide</button></form>
+        <form method="post" action="/event/{{ e['id'] }}/flag">
+          <button type="submit">{{ 'clear flag' if e['needs_review'] else 'flag' }}</button></form>
+      </div>
+      </div>
+      {% if e['thumb'] %}
+        <img class="thumb" src="/media/{{ e['thumb'] }}" alt="flyer" loading="lazy"
+             data-full="/media/{{ e['thumb'] }}"
+             data-title="{{ e['title'] or '' }}"
+             data-when="{{ when_label }}{% if e['start_time_known'] and e['starts_at']|clock %} · {{ e['starts_at']|clock }}{% endif %}"
+             data-venue="{{ e['venue_name'] or '' }}{% if e['neighborhood'] %} · {{ e['neighborhood'] }}{% endif %}"
+             data-price="{{ e['price_text'] or '' }}"
+             data-handle="{{ e['attributed_handle'] or e['polled_handle'] or '' }}"
+             data-link="{{ e['permalink'] or '' }}">
+        <div class="capsrc" hidden>{{ e['caption'] or '' }}</div>
+      {% endif %}
+     </div>
+    </article>
+{% endmacro %}
+
+{% if view == 'calendar' %}
+  <nav class="mnav">
+    <a href="?{{ query_with(args, month=prev_month) }}" rel="prev">&larr;</a>
+    <strong>{{ month_label }}</strong>
+    <a href="?{{ query_with(args, month=next_month) }}" rel="next">&rarr;</a>
+    <a class="mtoday" href="?{{ query_with(args, month=today[:7]) }}">today</a>
+  </nav>
+
+  <div class="cal">
+    {% for name in weekday_names %}<div class="cal-h">{{ name }}</div>{% endfor %}
+    {% for week in weeks %}{% for d in week %}
+      {% set cell %}
+        <span class="dnum">{{ d['day'] }}</span>
+        {% if d['events'] %}
+          <span class="cnt">{{ d['events']|length }}</span>
+          <span class="titles">
+            {% for e in d['events'][:3] %}
+              <span class="mini {% if e['needs_review'] %}review{% endif %}"
+                    >{% if e['start_time_known'] and e['starts_at']|clock %}<b>{{ e['starts_at']|clock }}</b> {% endif %}{{ e['title'] or '(untitled)' }}</span>
+            {% endfor %}
+            {% if d['events']|length > 3 %}
+              <span class="more">+{{ d['events']|length - 3 }} more</span>{% endif %}
+          </span>
+        {% endif %}
+      {% endset %}
+      {% if d['events'] %}
+        <a class="cal-d has {% if not d['in_month'] %}out{% endif %} {% if d['is_today'] %}now{% endif %}"
+           href="#d-{{ d['date'] }}">{{ cell }}</a>
+      {% else %}
+        <div class="cal-d {% if not d['in_month'] %}out{% endif %} {% if d['is_today'] %}now{% endif %}">{{ cell }}</div>
+      {% endif %}
+    {% endfor %}{% endfor %}
+  </div>
+{% endif %}
+
+{% for grp in days %}
+  <div class="day" id="d-{{ grp['date'] }}">{{ grp['label'] }}</div>
+  {% for e in grp['events'] %}{{ card(e, grp['label']) }}{% endfor %}
+{% else %}
+  <p class="empty">
+    {% if view == 'calendar' %}Nothing in {{ month_label }} matches those filters.
+    {% else %}Nothing matches those filters.{% endif %}
+  </p>
+{% endfor %}
+
+<footer>
+  Subscribe to this exact view:
+  <a href="/calendar.ics?{{ query_with(args) }}">calendar.ics</a>
+  — the same filters apply.
+  · <a href="/settings">settings</a> · <a href="/discover">accounts</a>
+</footer>
+
+</div>
+<div id="lb" role="dialog" aria-modal="true">
+  <button class="x" aria-label="close">&times;</button>
+  <div class="lb-inner">
+    <div class="lb-img"><img alt=""></div>
+    <aside class="lb-text">
+      <h3></h3>
+      <div class="lb-meta"></div>
+      <div class="lb-cap"></div>
+      <a class="lb-link" target="_blank" rel="noopener">open on Instagram &#8599;</a>
+    </aside>
+  </div>
+</div>
+<script>
+  // Flyer lightbox -- view the poster in place rather than bouncing to Instagram.
+  (function () {
+    var lb = document.getElementById('lb'), img = lb.querySelector('img'),
+        h3 = lb.querySelector('h3'), meta = lb.querySelector('.lb-meta'),
+        cap = lb.querySelector('.lb-cap'), link = lb.querySelector('.lb-link');
+    function close() { lb.classList.remove('on'); img.src = ''; }
+    document.querySelectorAll('.thumb').forEach(function (t) {
+      t.addEventListener('click', function () {
+        var d = t.dataset;
+        img.src = d.full;
+        h3.textContent = d.title || '';
+        // Show only the parts we actually have, so nothing renders as an empty dot
+        meta.textContent = [d.when, d.venue, d.price, d.handle && '@' + d.handle]
+                             .filter(Boolean).join(' · ');
+        var src = t.parentElement.querySelector('.capsrc');
+        cap.textContent = src ? src.textContent.trim() : '';
+        cap.style.display = cap.textContent ? '' : 'none';
+        if (d.link) { link.href = d.link; link.style.display = ''; }
+        else { link.style.display = 'none'; }
+        lb.classList.add('on');
+      });
+    });
+    lb.addEventListener('click', function (e) {
+      if (e.target === lb || e.target.classList.contains('x')) close();
+    });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+  })();
+
+  // Pills apply on click -- no separate Filter press for the toggles.
+  document.querySelectorAll('.chip input').forEach(function (el) {
+    el.addEventListener('change', function () { document.getElementById('f').submit(); });
+  });
+</script>
+</body>
+</html>

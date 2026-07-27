@@ -1,0 +1,19 @@
+# Secrets
+.env
+.env.local
+
+# Local config written by `cli init` -- city, radius, timezone are per-install.
+config.json
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+# Scraped content and model output — regenerable, and not ours to redistribute.
+# This is the line SPEC §11 draws: caching flyers and captions locally is fine
+# for a private single-user app and is NOT fine in a public repo.
+spike/posts/
+spike/results/
+data/

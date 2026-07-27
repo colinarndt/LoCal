@@ -1,0 +1,11 @@
+anthropic>=0.40
+apify-client>=1.7
+python-dotenv>=1.0
+flask>=3.0
+
+# Windows ships no IANA tz database, so zoneinfo rejects every timezone name
+# and `init` silently falls back to the default.
+tzdata>=2024.1; sys_platform == "win32"
+
+# Tests only.
+pytest>=8.0

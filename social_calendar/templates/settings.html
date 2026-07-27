@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings · Social Calendar</title>
+<style>
+  :root {
+    --bg:#fbfaf8; --card:#fff; --ink:#1a1a1a; --muted:#6b6b6b; --line:#e5e2dd;
+    --accent:#b4593a; --warn:#8a6d00; --warn-bg:#fdf6e0; --ok:#2f7d4f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16161a; --card:#1f1f24; --ink:#ececee; --muted:#9a9aa2;
+            --line:#2e2e35; --accent:#e0805c; --warn:#e8c34a; --warn-bg:#2a2413;
+            --ok:#6cc08b; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 -apple-system,
+         BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:620px; margin:0 auto; padding:16px; }
+  h1 { font-size:1.35rem; margin:0 0 4px; letter-spacing:-0.01em; }
+  h2 { font-size:.78rem; text-transform:uppercase; letter-spacing:.08em;
+       color:var(--muted); margin:26px 0 10px; }
+  a { color:var(--accent); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:16px; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin-bottom:4px; }
+  .field + .field { margin-top:14px; }
+  input[type=text], input[type=number] { font:inherit; width:100%; padding:8px 10px;
+    border-radius:7px; border:1px solid var(--line); background:var(--bg); color:var(--ink); }
+  .hint { font-size:.8rem; color:var(--muted); margin-top:4px; }
+  button { font:inherit; padding:8px 16px; border-radius:7px; border:1px solid transparent;
+           background:var(--accent); color:#fff; cursor:pointer; }
+  .msg { padding:10px 12px; border-radius:8px; font-size:.9rem; margin-bottom:14px; }
+  .msg.err { background:var(--warn-bg); color:var(--warn); }
+  .msg.ok { border:1px solid var(--line); color:var(--ok); }
+  .keys li { margin-bottom:8px; font-size:.9rem; list-style:none; }
+  .keys ul { padding:0; margin:0; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:8px; }
+  .dot.on { background:var(--ok); } .dot.off { background:var(--warn); }
+  code { background:var(--bg); border:1px solid var(--line); border-radius:5px;
+         padding:1px 6px; font-size:.86em; }
+  footer { margin:30px 0 12px; border-top:1px solid var(--line); padding-top:12px;
+           font-size:.85rem; color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Settings</h1>
+<p class="hint" style="margin-top:0">Where you are and how far out you care.
+  <a href="/">back to events</a></p>
+
+{% if error %}<div class="msg err">{{ error }}</div>{% endif %}
+{% if saved %}<div class="msg ok">Saved.</div>{% endif %}
+{% if not configured %}
+  <div class="msg err">Not set up yet — you're seeing the example city. Run
+    <code>python -m social_calendar.cli init</code>, or just fill this in.</div>
+{% endif %}
+
+<form method="post" class="card">
+  <div class="field">
+    <label for="city">City</label>
+    <input type="text" id="city" name="city" value="{{ cfg['city'] }}"
+           placeholder="Portland, OR">
+    <div class="hint">Geocoded once on save, and named in the extraction prompts so
+      the model knows whose venues it is reading. Currently
+      {{ '%.4f'|format(cfg['lat']) }}, {{ '%.4f'|format(cfg['lon']) }}.</div>
+  </div>
+  <div class="field">
+    <label for="radius_miles">Radius (miles)</label>
+    <input type="number" id="radius_miles" name="radius_miles" min="1" max="500" step="1"
+           value="{{ cfg['radius_miles']|round|int }}">
+    <div class="hint">A venue that geocodes outside this is treated as a wrong-metro
+      match and dropped — same city name, different state.</div>
+  </div>
+  <div class="field">
+    <label for="timezone">Timezone</label>
+    <input type="text" id="timezone" name="timezone" value="{{ cfg['timezone'] }}"
+           placeholder="America/New_York">
+    <div class="hint">IANA name, not an abbreviation — it goes straight into the ICS
+      feed as <code>TZID</code>, and calendar apps reject <code>EDT</code>.</div>
+  </div>
+  <div class="field">
+    <label for="country">Country</label>
+    <input type="text" id="country" name="country" value="{{ cfg['country'] }}">
+    <div class="hint">Used only to disambiguate postal-code lookups.</div>
+  </div>
+  <div class="field"><button type="submit">Save</button></div>
+</form>
+
+<h2>API keys</h2>
+<div class="card keys">
+  <ul>
+  {% for name, label, present, url in keys %}
+    <li><span class="dot {{ 'on' if present else 'off' }}"></span>
+      <code>{{ name }}</code> — {{ 'set' if present else 'not set' }}
+      {% if not present %}· <a href="{{ url }}" target="_blank" rel="noopener">get one</a>{% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+  <p class="hint">Keys are not editable here on purpose. This app binds
+    <code>0.0.0.0</code> with no login so your phone can reach it, which would make
+    a key field on this page a key field for everyone on the network. Set them with
+    <code>python -m social_calendar.cli init</code>, or edit <code>.env</code>.</p>
+</div>
+
+<footer>Settings live in <code>config.json</code>; keys live in <code>.env</code>.
+  Neither is committed.</footer>
+
+</div>
+</body>
+</html>
