@@ -10,7 +10,9 @@ pull it up on a phone (over Tailscale/LAN -- no auth, single user).
 from __future__ import annotations
 
 import calendar
+import csv
 import datetime as dt
+import io
 import json
 import os
 import re
@@ -355,20 +357,24 @@ def settings():
 
 
 # --- fetch-now jobs -------------------------------------------------------
-# Polling one account takes minutes -- an Apify scrape plus a vision call per
-# surviving post -- so it cannot happen inside the request. A worker thread does
-# the work, the page polls /jobs, and single-flight keeps two expensive runs
-# (and two SQLite writers) from overlapping.
+# Polling takes minutes -- an Apify scrape plus a vision call per surviving post,
+# for one account or for the whole rotation -- so it cannot happen inside the
+# request. A worker thread does the work, the page polls /jobs, and single-flight
+# keeps two expensive runs (and two SQLite writers) from overlapping.
 #
-# This is the one place the web UI spends money. It is deliberately per-account,
-# cost-capped by `limit`, and shown before you click.
+# Single-flight is per process: cron's `run-once` is a separate process and is not
+# covered by it. WAL plus busy_timeout keep that safe, just not free.
+#
+# This is the one place the web UI spends money. It is cost-capped by `limit`
+# per account, and the estimate is shown before you click.
 
-JOB: dict = {"state": "idle", "handle": None, "message": "", "stats": None}
+JOB: dict = {"state": "idle", "handle": None, "label": "", "message": "", "stats": None}
 _JOB_LOCK = threading.Lock()
 FETCH_LIMIT = 20
+POST_COST = 0.002   # ~$2.00 per 1,000 posts, same figure ApifySource quotes
 
 
-def _fetch_worker(handle: str, db_path: str, limit: int) -> None:
+def _fetch_worker(handles: list[str], db_path: str, limit: int) -> None:
     from .extract import Extractor
     from .sources import ApifySource
 
@@ -378,8 +384,10 @@ def _fetch_worker(handle: str, db_path: str, limit: int) -> None:
     try:
         source = ApifySource(os.environ["APIFY_TOKEN"])
         with db.session(db_path) as conn:
-            newer_than, _ = runner.fetch_window(conn, [handle])
-            stats = runner.poll(conn, source, Extractor(), [handle], limit,
+            # Same window cron uses: posts newer than the oldest last_polled_at
+            # across the batch, so a refresh only pays for what it has not seen.
+            newer_than, _ = runner.fetch_window(conn, handles)
+            stats = runner.poll(conn, source, Extractor(), handles, limit,
                                 newer_than=newer_than, log=progress)
         JOB.update(state="done", stats=stats,
                    message=f"{stats['ingested']} new posts, "
@@ -393,11 +401,8 @@ def _fetch_worker(handle: str, db_path: str, limit: int) -> None:
             JOB.update(state="error", message="worker exited without a result")
 
 
-@app.post("/discover/<handle>/fetch")
-def fetch_now(handle: str):
-    if not HANDLE_RE.match(handle):
-        return redirect(url_for("discover", err="bad-handle"))
-
+def _start_fetch(handles: list[str], label: str):
+    """Claim the single job slot and hand the batch to a worker thread."""
     missing = [k for k, _, _ in config.API_KEYS if not os.getenv(k)]
     if missing:
         return redirect(url_for("discover", err="no-keys"))
@@ -405,11 +410,34 @@ def fetch_now(handle: str):
     with _JOB_LOCK:
         if JOB["state"] == "running":
             return redirect(url_for("discover", err="busy"))
-        JOB.update(state="running", handle=handle, message="starting...", stats=None)
+        JOB.update(state="running", handle=handles[0] if len(handles) == 1 else None,
+                   label=label, message="starting...", stats=None)
 
     threading.Thread(target=_fetch_worker, daemon=True,
-                     args=(handle, app.config["DB"], FETCH_LIMIT)).start()
+                     args=(handles, app.config["DB"], FETCH_LIMIT)).start()
     return redirect(url_for("discover"))
+
+
+@app.post("/discover/<handle>/fetch")
+def fetch_now(handle: str):
+    if not HANDLE_RE.match(handle):
+        return redirect(url_for("discover", err="bad-handle"))
+    return _start_fetch([handle], f"@{handle}")
+
+
+@app.post("/discover/fetch-all")
+def fetch_all():
+    """Refresh the whole rotation -- the same work cron's `run-once` does.
+
+    Deliberately not routed as /discover/all/fetch: HANDLE_RE accepts "all",
+    so that URL would be ambiguous with a real account named @all.
+    """
+    with db.session(app.config["DB"]) as conn:
+        handles = discovery.approved_handles(conn)
+    if not handles:
+        # fetch_recent([]) would still bill a run, so never let it start.
+        return redirect(url_for("discover", err="nothing-polled"))
+    return _start_fetch(handles, f"{len(handles)} accounts")
 
 
 @app.route("/jobs")
@@ -425,7 +453,7 @@ def discover():
     # follow you around on every later visit to this page.
     job = dict(JOB)
     if job["state"] in ("done", "error"):
-        JOB.update(state="idle", handle=None, message="", stats=None)
+        JOB.update(state="idle", handle=None, label="", message="", stats=None)
 
     with db.session(app.config["DB"]) as conn:
         discovery.stage(conn, discovery.rank_tagged(conn))
@@ -437,7 +465,8 @@ def discover():
                                approved=request.args.get("approved"),
                                err=request.args.get("err"), job=job,
                                fetch_limit=FETCH_LIMIT,
-                               fetch_cost=FETCH_LIMIT * 0.002)
+                               fetch_cost=FETCH_LIMIT * POST_COST,
+                               fetch_all_cost=len(polled) * FETCH_LIMIT * POST_COST)
 
 
 HANDLE_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
@@ -545,6 +574,52 @@ def calendar_ics():
 
     return Response("\r\n".join(lines) + "\r\n", mimetype="text/calendar",
                     headers={"Content-Disposition": "inline; filename=social-calendar.ics"})
+
+
+CSV_COLUMNS = ["date", "time", "title", "venue", "neighborhood", "address",
+               "category", "price", "source_account", "confirmed", "needs_review",
+               "review_reason", "link"]
+
+
+@app.route("/events.csv")
+def events_csv():
+    """The same filtered view as the page, as a spreadsheet.
+
+    Google Sheets, Excel and Numbers all open CSV directly. Filters ride along
+    in the query string exactly as they do for the .ics feed, so the download
+    matches whatever the page is showing. (Sheets' =IMPORTDATA() cannot reach
+    this URL -- Google's servers would have to resolve it, and we bind to
+    localhost/Tailscale. Import the downloaded file instead.)
+    """
+    with db.session(app.config["DB"]) as conn:
+        rows = _rows(conn, request.args)
+
+    # utf-8-sig: Excel assumes the local codepage without a BOM and mangles
+    # every accented venue name. Sheets ignores the BOM.
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(CSV_COLUMNS)
+    for r in rows:
+        start = r["starts_at"] or ""
+        w.writerow([
+            start[:10],
+            start[11:16] if r["start_time_known"] and "T" in start else "",
+            r["title"] or "",
+            r["venue_name"] or "",
+            r["neighborhood"] or "",
+            r["address"] or "",
+            r["category"] or "",
+            r["price_text"] or "",
+            f"@{r['attributed_handle']}" if r["attributed_handle"] else "",
+            "yes" if r["is_confirmed"] else "",
+            "yes" if r["needs_review"] else "",
+            r["review_reason"] or "",
+            r["permalink"] or "",
+        ])
+
+    return Response(buf.getvalue().encode("utf-8-sig"), mimetype="text/csv",
+                    headers={"Content-Disposition":
+                             "attachment; filename=social-calendar.csv"})
 
 
 def main() -> None:

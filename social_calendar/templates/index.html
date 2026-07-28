@@ -24,7 +24,8 @@
   a { color:var(--accent); }
 
   form.filters { background:var(--card); border:1px solid var(--line); border-radius:10px;
-                 padding:12px; margin:12px 0 20px; }
+                 padding:12px; margin:12px 0 6px; }
+  .subline { text-align:right; font-size:.85rem; margin:0 0 20px; }
   .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
   .row + .row { margin-top:8px; }
   select, input[type=date], button { font:inherit; padding:6px 9px; border-radius:7px;
@@ -139,8 +140,6 @@
   }
   #lb .x { position:absolute; top:12px; right:16px; color:#eee; font-size:2rem;
            line-height:1; cursor:pointer; background:none; border:0; }
-  footer { margin:36px 0 12px; color:var(--muted); font-size:.85rem;
-           border-top:1px solid var(--line); padding-top:12px; }
 </style>
 </head>
 <body>
@@ -151,8 +150,8 @@
   <span class="count">
     {# calendar totals cover the whole grid, spill days included -- not just the month #}
     {{ total }} event{{ '' if total == 1 else 's' }}{% if view == 'calendar' %} in view{% endif %}
-    {% if review_count %} · <a href="?{{ query_with(args, review='1') }}">{{ review_count }} need review</a>{% endif %}
-    {% if pending_count %} · <a href="/discover">{{ pending_count }} accounts to review</a>{% endif %}
+    · <a href="/discover">accounts</a>
+    · <a href="/settings">settings</a>
   </span>
 </header>
 
@@ -235,6 +234,12 @@
     <a href="/{% if view == 'calendar' %}?view=calendar{% endif %}"><button type="button">Reset</button></a>
   </div>
 </form>
+
+{# both exports carry the current filters, so build them from the live query #}
+<p class="subline"><a href="/calendar.ics?{{ query_with(args) }}"
+     title="Subscribe to this exact view -- the same filters apply">subscribe to this calendar</a>
+  · <a href="/events.csv?{{ query_with(args) }}"
+       title="Download this view as a CSV -- import it into Google Sheets, Excel or Numbers">download CSV</a></p>
 
 {% macro card(e, when_label) %}
     <article class="ev {% if e['needs_review'] %}review{% endif %}">
@@ -331,13 +336,6 @@
     {% else %}Nothing matches those filters.{% endif %}
   </p>
 {% endfor %}
-
-<footer>
-  Subscribe to this exact view:
-  <a href="/calendar.ics?{{ query_with(args) }}">calendar.ics</a>
-  — the same filters apply.
-  · <a href="/settings">settings</a> · <a href="/discover">accounts</a>
-</footer>
 
 </div>
 <div id="lb" role="dialog" aria-modal="true">
