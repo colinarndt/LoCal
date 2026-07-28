@@ -1,7 +1,7 @@
 # instagram-calendar
 
-Local events are announced on Instagram and nowhere else. This pulls those
-announcements out — captions *and* flyer images — turns them into structured
+Many local events are announced on Instagram and nowhere else. This pulls those
+announcements out - captions *and* flyer images - turns them into structured
 events, deduplicates them, and gives you a filterable calendar plus an ICS feed
 you can subscribe to on your phone.
 
