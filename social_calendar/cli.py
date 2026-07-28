@@ -16,7 +16,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import avatars, db, discovery, geo, pipeline
+from . import avatars, db, discovery, geo, pipeline, runner
 from .config import API_KEYS, ENV_PATH
 from .sources import ApifySource, LocalSpikeSource, read_accounts
 
@@ -160,59 +160,27 @@ def cmd_run_once(args) -> None:
                     "ON CONFLICT(handle) DO UPDATE SET is_polled=1, status='approved'", (h,))
     source = ApifySource(token)
 
-    # Window the fetch. A never-polled account needs history; an account we
-    # polled yesterday only needs yesterday. Measured on real data: posts older
-    # than 30 days produced 3% of upcoming events while being 18% of fetches.
+    # Measured on real data: posts older than 30 days produced 3% of upcoming
+    # events while being 18% of fetches, so the window is worth narrowing.
     with db.session(args.db) as conn:
-        never = conn.execute(
-            "SELECT COUNT(*) FROM account WHERE is_polled=1 AND last_polled_at IS NULL"
-        ).fetchone()[0]
-        oldest = conn.execute(
-            "SELECT MIN(last_polled_at) FROM account WHERE is_polled=1 "
-            "AND last_polled_at IS NOT NULL").fetchone()[0]
-
-    if args.history_days:
-        newer_than = f"{args.history_days} days"
-    elif never or not oldest:
-        newer_than = "30 days"       # someone is new: give them history
-        print(f"{never} never-polled account(s) -> fetching 30 days of history")
-    else:
-        # 2-day overlap absorbs clock skew and a missed cron run
-        age = (dt.datetime.now(dt.timezone.utc)
-               - dt.datetime.fromisoformat(oldest)).days + 2
-        newer_than = f"{max(age, 3)} days"
-        print(f"incremental: fetching posts newer than {newer_than}")
+        newer_than, why = runner.fetch_window(conn, handles, args.history_days)
+    print(why)
 
     est = source.estimate_cost(handles, args.limit)
     print(f"{len(handles)} accounts x {args.limit} posts -> ~${est:.2f} scraping")
-    if not args.yes and input("Proceed? [y/N] ").strip().lower() != "y":
-        sys.exit("Aborted.")
+    if not args.yes:
+        # Scheduled runs have no stdin, and a bare input() there dies with an
+        # EOFError traceback. Spending money still requires saying so -- but say
+        # it in the crontab, not into a pipe that cannot answer.
+        if not sys.stdin.isatty():
+            sys.exit("run-once needs --yes when nothing can answer a prompt "
+                     "(cron, launchd, systemd). It spends money; that is why it asks.")
+        if input("Proceed? [y/N] ").strip().lower() != "y":
+            sys.exit("Aborted.")
 
     with db.session(args.db) as conn:
-        n = pipeline.ingest(conn, source, handles, args.limit, newer_than=newer_than)
-        print(f"ingested {n} new posts")
-        print("processing:", pipeline.process(conn, _extractor(args.rung), args.max_posts))
-        # series first: generated occurrences must be visible to dedupe in the
-        # same pass, or duplicates survive until the next run
-        print("series:", pipeline.expand_series(conn))
-        print("dedupe:", pipeline.rebuild_dedupe(conn))
-        # New accounts bring new venues; without this they show no neighborhood
-        # and are invisible to the radius filter. Idempotent -- only new keys
-        # are queried, at Nominatim's 1 req/sec.
-        print("geocode:", geo.geocode_all(conn))
-        _relabel(conn)
-        # Surface newly-tagged accounts and give them avatars, so /discover is
-        # populated without a separate manual pass. Idempotent: only accounts
-        # missing an avatar are fetched, so a steady-state run costs nothing.
-        discovery.stage(conn, discovery.rank_tagged(conn))
-        print("avatars:", avatars.backfill(conn, source.client))
-
-
-def _relabel(conn) -> None:
-    """Canonical venue labels, so the dropdown shows one tidy name per venue."""
-    for r in conn.execute("SELECT venue_key, address FROM venue").fetchall():
-        conn.execute("UPDATE venue SET display_name=? WHERE venue_key=?",
-                     (geo.label_for(r["venue_key"], r["address"]), r["venue_key"]))
+        runner.poll(conn, source, _extractor(args.rung), handles, args.limit,
+                    newer_than=newer_than, max_posts=args.max_posts, log=print)
 
 
 def cmd_import_spike(args) -> None:
@@ -358,7 +326,7 @@ def _geocode_cmd(args) -> None:
     with db.session(args.db) as conn:
         print("dedupe:", pipeline.rebuild_dedupe(conn))   # apply any new aliases first
         print("geocode:", geo.geocode_all(conn, force=args.force))
-        _relabel(conn)
+        runner.relabel(conn)
 
 
 def main() -> None:

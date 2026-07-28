@@ -45,8 +45,10 @@ def ingest(conn: sqlite3.Connection, source: IngestionSource, handles: list[str]
         elif name:
             _touch_account(conn, p.polled_handle, polled=True, display_name=name)
         new += 1
-        if new % 25 == 0:
-            conn.commit()
+        # Commit per post, not per batch: download_images() does network I/O on
+        # the next iteration, and an open transaction across it holds the write
+        # lock long enough to 500 the web UI.
+        conn.commit()
     conn.commit()
     for h in handles:
         conn.execute("UPDATE account SET last_polled_at=? WHERE handle=?", (_now(), h))

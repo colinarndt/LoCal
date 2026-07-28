@@ -42,6 +42,18 @@
    line-height:1;padding:0 4px}
  .ptag form{display:inline}
  footer{margin-top:28px;border-top:1px solid var(--line);padding-top:12px;color:var(--muted);font-size:.85rem}
+ .fetchf{display:inline}
+ .msg .fetchf button{font-size:.8rem;padding:3px 9px;margin-left:4px}
+ button[disabled]{opacity:.45;cursor:not-allowed}
+ .job{display:flex;align-items:center;gap:9px;background:var(--card);border:1px solid var(--line);
+   border-radius:9px;padding:10px 13px;font-size:.87rem;margin:10px 0}
+ .job.hide{display:none}
+ .job.done{border-color:var(--accent)}
+ .job.err{border-color:#c0392b;color:#c0392b}
+ .spin{width:13px;height:13px;border-radius:50%;border:2px solid var(--line);
+   border-top-color:var(--accent);animation:sp .8s linear infinite;flex-shrink:0}
+ .job.done .spin,.job.err .spin{display:none}
+ @keyframes sp{to{transform:rotate(360deg)}}
 </style></head><body><div class="wrap">
 <header><h1>Discover accounts</h1><a href="/">← calendar</a></header>
 
@@ -50,8 +62,34 @@
          autocapitalize="none" autocorrect="off" spellcheck="false" required>
   <button class="ok" type="submit">add to rotation</button>
 </form>
-{% if added %}<p class="msg">Added @{{ added }} — it will be polled on the next run.</p>{% endif %}
-{% if err %}<p class="msg warn">That does not look like a valid Instagram handle.</p>{% endif %}
+{% macro fetch_button(handle, label) %}
+  <form method="post" action="/discover/{{ handle }}/fetch" class="fetchf"
+        onsubmit="return confirm('Fetch @{{ handle }} now?\n\nScrapes up to {{ fetch_limit }} recent posts and runs extraction on them — about ${{ '%.2f'|format(fetch_cost) }} of scraping plus model calls.')">
+    <button type="submit" {{ 'disabled' if job['state'] == 'running' }}>{{ label }}</button>
+  </form>
+{% endmacro %}
+
+{% if added %}
+  <p class="msg">Added @{{ added }} — polled on the next scheduled run.
+    {{ fetch_button(added, 'or fetch it now') }}</p>
+{% endif %}
+{% if approved %}
+  <p class="msg">Approved @{{ approved }} — polled on the next scheduled run.
+    {{ fetch_button(approved, 'or fetch it now') }}</p>
+{% endif %}
+{% if err == 'busy' %}
+  <p class="msg warn">A fetch is already running — one at a time.</p>
+{% elif err == 'no-keys' %}
+  <p class="msg warn">Fetching needs both API keys. Run
+    <code>python -m social_calendar.cli init</code>, or check
+    <a href="/settings">settings</a>.</p>
+{% elif err %}
+  <p class="msg warn">That does not look like a valid Instagram handle.</p>
+{% endif %}
+
+<div id="job" class="job {{ '' if job['state'] in ('running','done','error') else 'hide' }}">
+  <span class="spin"></span><span id="jobtext"></span>
+</div>
 
 <details class="polled">
   <summary>{{ polled|length }} accounts currently polled</summary>
@@ -60,6 +98,10 @@
       <span class="ptag">{% if a['avatar_file'] %}
           <img class="av sm" src="/avatar/{{ a['avatar_file'] }}" alt="" loading="lazy">
         {% endif %}{{ a['display_name'] or a['handle'] }}
+        <form method="post" action="/discover/{{ a['handle'] }}/fetch" class="fetchf"
+              onsubmit="return confirm('Fetch @{{ a['handle'] }} now?\n\nScrapes up to {{ fetch_limit }} recent posts and runs extraction — about ${{ '%.2f'|format(fetch_cost) }} of scraping plus model calls.')">
+          <button type="submit" title="fetch this account now"
+                  {{ 'disabled' if job['state'] == 'running' }}>&#8635;</button></form>
         <form method="post" action="/discover/{{ a['handle'] }}/reject">
           <button type="submit" title="stop polling">&times;</button></form>
       </span>
@@ -101,5 +143,54 @@
   <p class="empty">No candidates awaiting review.</p>
 {% endfor %}
 <footer>Approved accounts are written to the database, not to accounts.txt —
-  <code>run-once</code> reads the rotation from there.</footer>
-</div></body></html>
+  <code>run-once</code> reads the rotation from there. A scheduled run polls
+  everything; "fetch now" polls one account so you can see it work immediately.</footer>
+</div>
+<script>
+// Poll the one job slot. A fetch runs for minutes (scrape + a vision call per
+// surviving post), so the page has to report progress rather than hang.
+(function () {
+  var box = document.getElementById('job'), text = document.getElementById('jobtext');
+  var timer = null;
+
+  function render(j) {
+    if (j.state === 'idle') { box.className = 'job hide'; return; }
+    box.className = 'job' + (j.state === 'done' ? ' done' : j.state === 'error' ? ' err' : '');
+    var who = j.handle ? '@' + j.handle : '';
+    if (j.state === 'running')      text.textContent = 'Fetching ' + who + ' — ' + (j.message || 'working...');
+    else if (j.state === 'done')    text.textContent = 'Done: ' + who + ' — ' + (j.message || '') + '. Reloading...';
+    else                            text.textContent = 'Failed: ' + who + ' — ' + (j.message || '');
+    return j.state;
+  }
+
+  function poll() {
+    fetch('/jobs').then(function (r) { return r.json(); }).then(function (j) {
+      var state = render(j);
+      if (state === 'running') return;
+      clearInterval(timer);
+      // A finished fetch has written new events and venues; the page behind this
+      // banner is stale, so pull it fresh once rather than leaving both showing.
+      // 'idle' counts as finished: another tab may have loaded /discover and
+      // consumed the result, and reloading is how this tab learns what changed.
+      if (state === 'done' || state === undefined) {
+        setTimeout(function () { location.reload(); }, 1500);
+      }
+    }).catch(function () { clearInterval(timer); });
+  }
+
+  if ({{ 'true' if job['state'] == 'running' else 'false' }}) {
+    render({{ job|tojson }});
+    timer = setInterval(poll, 2000);
+  } else {
+    render({{ job|tojson }});
+  }
+
+  document.querySelectorAll('.fetchf').forEach(function (f) {
+    f.addEventListener('submit', function () {
+      // The redirect lands before the worker reports anything; start watching.
+      setTimeout(function () { timer = setInterval(poll, 2000); poll(); }, 500);
+    });
+  });
+})();
+</script>
+</body></html>

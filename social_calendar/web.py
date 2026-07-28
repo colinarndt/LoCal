@@ -12,7 +12,9 @@ from __future__ import annotations
 import calendar
 import datetime as dt
 import json
+import os
 import re
+import threading
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -20,7 +22,7 @@ from dotenv import load_dotenv
 from flask import (Flask, Response, abort, redirect, render_template, request,
                    send_from_directory, url_for)
 
-from . import config, db, discovery, geo
+from . import config, db, discovery, geo, runner
 
 # Only so /settings can report whether a key is present. Values are never
 # rendered, logged, or accepted over HTTP -- see the note above that route.
@@ -352,9 +354,79 @@ def settings():
     )
 
 
+# --- fetch-now jobs -------------------------------------------------------
+# Polling one account takes minutes -- an Apify scrape plus a vision call per
+# surviving post -- so it cannot happen inside the request. A worker thread does
+# the work, the page polls /jobs, and single-flight keeps two expensive runs
+# (and two SQLite writers) from overlapping.
+#
+# This is the one place the web UI spends money. It is deliberately per-account,
+# cost-capped by `limit`, and shown before you click.
+
+JOB: dict = {"state": "idle", "handle": None, "message": "", "stats": None}
+_JOB_LOCK = threading.Lock()
+FETCH_LIMIT = 20
+
+
+def _fetch_worker(handle: str, db_path: str, limit: int) -> None:
+    from .extract import Extractor
+    from .sources import ApifySource
+
+    def progress(msg):
+        JOB["message"] = str(msg)
+
+    try:
+        source = ApifySource(os.environ["APIFY_TOKEN"])
+        with db.session(db_path) as conn:
+            newer_than, _ = runner.fetch_window(conn, [handle])
+            stats = runner.poll(conn, source, Extractor(), [handle], limit,
+                                newer_than=newer_than, log=progress)
+        JOB.update(state="done", stats=stats,
+                   message=f"{stats['ingested']} new posts, "
+                           f"{stats['processed'].get('events', 0)} events")
+    except Exception as exc:
+        # Surfaced in the UI rather than only in the server log -- a fetch that
+        # silently did nothing is worse than one that says why.
+        JOB.update(state="error", message=f"{type(exc).__name__}: {exc}")
+    finally:
+        if JOB["state"] == "running":
+            JOB.update(state="error", message="worker exited without a result")
+
+
+@app.post("/discover/<handle>/fetch")
+def fetch_now(handle: str):
+    if not HANDLE_RE.match(handle):
+        return redirect(url_for("discover", err="bad-handle"))
+
+    missing = [k for k, _, _ in config.API_KEYS if not os.getenv(k)]
+    if missing:
+        return redirect(url_for("discover", err="no-keys"))
+
+    with _JOB_LOCK:
+        if JOB["state"] == "running":
+            return redirect(url_for("discover", err="busy"))
+        JOB.update(state="running", handle=handle, message="starting...", stats=None)
+
+    threading.Thread(target=_fetch_worker, daemon=True,
+                     args=(handle, app.config["DB"], FETCH_LIMIT)).start()
+    return redirect(url_for("discover"))
+
+
+@app.route("/jobs")
+def jobs():
+    """Polled by /discover so the button can report progress without a reload."""
+    return JOB
+
+
 @app.route("/discover")
 def discover():
     """Review queue. Nothing enters the poll rotation without a click here."""
+    # A finished job is reported once and then cleared, so its banner does not
+    # follow you around on every later visit to this page.
+    job = dict(JOB)
+    if job["state"] in ("done", "error"):
+        JOB.update(state="idle", handle=None, message="", stats=None)
+
     with db.session(app.config["DB"]) as conn:
         discovery.stage(conn, discovery.rank_tagged(conn))
         polled = conn.execute(
@@ -362,7 +434,10 @@ def discover():
             "ORDER BY handle").fetchall()
         return render_template("discover.html", queue=discovery.pending(conn),
                                polled=polled, added=request.args.get("added"),
-                               err=request.args.get("err"))
+                               approved=request.args.get("approved"),
+                               err=request.args.get("err"), job=job,
+                               fetch_limit=FETCH_LIMIT,
+                               fetch_cost=FETCH_LIMIT * 0.002)
 
 
 HANDLE_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
@@ -395,6 +470,10 @@ def decide(handle: str, decision: str):
         return ("unknown decision", 400)
     with db.session(app.config["DB"]) as conn:
         discovery.decide(conn, handle, approve=(decision == "approve"))
+    # Approving used to be silent, which read as nothing having happened -- the
+    # account is not polled until the next scheduled run. Offer the fetch instead.
+    if decision == "approve":
+        return redirect(url_for("discover", approved=handle))
     return redirect(url_for("discover"))
 
 

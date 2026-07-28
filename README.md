@@ -79,7 +79,42 @@ python -m social_calendar.cli geocode    # fill in venue coordinates
 python -m social_calendar.cli stats
 ```
 
-`run-once` is what you'd put on a cron. There's no daemon.
+## Keeping it up to date
+
+`run-once` is the whole refresh. There's no daemon — you schedule it.
+
+It's **incremental and self-healing**: every account records `last_polled_at`, and
+a run fetches only what's newer than that plus a two-day overlap. A missed run
+isn't a gap to repair; the next one widens its own window. Geocoding new venues,
+dedupe, and avatars all happen in the same pass and only touch new rows.
+
+Venues post about once a day, so **daily is the right cadence** — more often
+spends money to find nothing.
+
+```cron
+0 7 * * * cd /path/to/instagram-calendar && .venv/bin/python -m social_calendar.cli run-once --yes >> data/run.log 2>&1
+```
+
+Two things that entry is careful about:
+
+- **`--yes` is required.** Scheduled runs have no terminal to answer the
+  confirmation prompt, and `run-once` refuses rather than hanging. It spends
+  money, so saying so moves into the crontab.
+- **`cd` first.** There's no `pyproject.toml`, so `python -m social_calendar.cli`
+  resolves the package from the working directory. Without the `cd` you get
+  `ModuleNotFoundError`.
+
+On a **laptop**, use `launchd` instead of cron — cron silently skips a run when
+the lid is shut at 7am and never catches up, while `launchd`'s
+`StartCalendarInterval` fires the job on wake. On an always-on machine, either is
+fine.
+
+### Adding an account without waiting
+
+Approving an account in `/discover` puts it in the rotation, but nothing appears
+until the next scheduled run. The **fetch now** button (↻) polls that one account
+immediately so you can see it work — it runs in the background, reports progress
+on the page, and shows the cost before you confirm. One at a time.
 
 ### Views
 

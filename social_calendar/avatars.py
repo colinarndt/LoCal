@@ -77,4 +77,7 @@ def backfill(conn, client, limit: int = 60) -> dict:
             conn.execute(
                 "UPDATE account SET display_name=COALESCE(display_name, ?) WHERE handle=?",
                 (p["full_name"], h))
+        # Each download() is a network round trip; commit between them so the
+        # write lock is not held across the whole backfill.
+        conn.commit()
     return {"requested": len(handles), "saved": saved}

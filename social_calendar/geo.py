@@ -185,6 +185,10 @@ def geocode_all(conn, city: str | None = None, force: bool = False) -> dict:
             stats["skipped"] += 1
             continue
 
+        # Commit before the lookup: geocode_venue sleeps 1.1s for Nominatim's
+        # rate limit, and holding the write lock across that many sleeps takes
+        # the web UI down for the length of the whole geocoding pass.
+        conn.commit()
         query = QUERY_OVERRIDES.get(r["venue_key"])
         hit = (geocode_venue(query, city="") if query
                else geocode_venue(r["venue_name"], city))

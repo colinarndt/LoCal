@@ -5,6 +5,9 @@
 # Local config written by `cli init` -- city, radius, timezone are per-install.
 config.json
 
+# Per-machine tool settings, not project config.
+.claude/
+
 .venv/
 __pycache__/
 *.pyc
