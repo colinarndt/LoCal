@@ -35,11 +35,9 @@
    background:var(--card);color:var(--ink)}
  .msg{font-size:.85rem;color:var(--accent);margin:4px 0}
  .msg.warn{color:#c0392b}
- .polledbar{display:flex;align-items:flex-start;justify-content:space-between;
-   gap:10px;margin:10px 0 18px}
- .polledbar .fetchf{flex-shrink:0}
- .polled{flex:1;min-width:0;font-size:.87rem;color:var(--muted)}
- .polled summary{cursor:pointer}
+ .sechead{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+ .sechead .lead{margin-bottom:0}
+ .sechead .fetchf{flex-shrink:0}
  .plist{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
  .ptag{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);
    border-radius:999px;padding:3px 5px 3px 11px;font-size:.82rem;color:var(--ink)}
@@ -98,28 +96,30 @@
   <span class="spin"></span><span id="jobtext"></span>
 </div>
 
-<div class="polledbar">
-<details class="polled">
-  <summary>{{ polled|length }} accounts currently polled</summary>
-  <div class="plist">
-    {% for a in polled %}
-      <span class="ptag">{% if a['avatar_file'] %}
-          <img class="av sm" src="/avatar/{{ a['avatar_file'] }}" alt="" loading="lazy">
-        {% endif %}{{ a['display_name'] or a['handle'] }}
-        <form method="post" action="/discover/{{ a['handle'] }}/reject">
-          <button type="submit" title="stop polling">&times;</button></form>
-      </span>
-    {% endfor %}
-  </div>
-</details>
+<h2>Followed accounts</h2>
+<div class="sechead">
+  <p class="lead">{{ polled|length }} account{{ '' if polled|length == 1 else 's' }} currently
+    in the poll rotation.</p>
 {% if polled %}
   {# One button for the whole rotation: the window is per-account and incremental,
      so this is the same work the nightly run-once does, on demand. #}
   <form method="post" action="/discover/fetch-all" class="fetchf"
         onsubmit="return confirm('Refresh all {{ polled|length }} polled account{{ '' if polled|length == 1 else 's' }}?\n\nFetches only posts since each account was last polled — up to ${{ '%.2f'|format(fetch_all_cost) }} of scraping if every account hits its {{ fetch_limit }}-post cap, plus model calls on whatever is new.')">
     <button class="ok" type="submit" {{ 'disabled' if job['state'] == 'running' }}
-            >&#8635; refresh all</button></form>
+            >&#8635; check for new posts</button></form>
 {% endif %}
+</div>
+<div class="plist">
+  {% for a in polled %}
+    <span class="ptag">{% if a['avatar_file'] %}
+        <img class="av sm" src="/avatar/{{ a['avatar_file'] }}" alt="" loading="lazy">
+      {% endif %}{{ a['display_name'] or a['handle'] }}
+      <form method="post" action="/discover/{{ a['handle'] }}/reject">
+        <button type="submit" title="stop polling">&times;</button></form>
+    </span>
+  {% else %}
+    <p class="empty">Nothing in the rotation yet.</p>
+  {% endfor %}
 </div>
 <h2>Suggested accounts</h2>
 <p class="lead">

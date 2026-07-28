@@ -384,11 +384,11 @@ def _fetch_worker(handles: list[str], db_path: str, limit: int) -> None:
     try:
         source = ApifySource(os.environ["APIFY_TOKEN"])
         with db.session(db_path) as conn:
-            # Same window cron uses: posts newer than the oldest last_polled_at
-            # across the batch, so a refresh only pays for what it has not seen.
-            newer_than, _ = runner.fetch_window(conn, handles)
+            # Same grouping cron uses: each account asks only for what it has
+            # missed, so one new account cannot drag the rest back to 30 days.
+            groups = runner.fetch_windows(conn, handles)
             stats = runner.poll(conn, source, Extractor(), handles, limit,
-                                newer_than=newer_than, log=progress)
+                                groups=groups, log=progress)
         JOB.update(state="done", stats=stats,
                    message=f"{stats['ingested']} new posts, "
                            f"{stats['processed'].get('events', 0)} events")

@@ -18,28 +18,52 @@ import sqlite3
 from . import avatars, discovery, geo, pipeline
 
 
-def fetch_window(conn: sqlite3.Connection, handles: list[str],
-                 history_days: int | None = None) -> tuple[str, str]:
-    """How far back to fetch, as (newer_than, why).
+HISTORY_WINDOW = "30 days"
+
+
+def _window_for(mark: str | None) -> str:
+    """One account's window, from its own last_polled_at.
 
     A never-polled account needs history; one polled yesterday needs yesterday.
     The 2-day overlap absorbs clock skew and a missed scheduled run -- which is
     what makes a skipped day self-healing rather than a permanent gap.
     """
+    if mark is None:
+        return HISTORY_WINDOW
+    age = (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(mark)).days + 2
+    return f"{max(age, 3)} days"
+
+
+def fetch_windows(conn: sqlite3.Connection, handles: list[str],
+                  history_days: int | None = None) -> list[tuple[str, list[str]]]:
+    """Group handles by their own window, widest first.
+
+    Collapsing a batch to one window (the oldest mark in it) meant a single
+    never-polled account dragged all 19 back to 30 days of history, re-fetching
+    the rest at full price. Grouping means each account asks only for what it
+    is actually missing.
+
+    One Apify run per group, not per account: `onlyPostsNewerThan` is run-level,
+    applied to every directUrl in the run. Accounts polled together share a mark,
+    so this is normally two groups -- new accounts, then everybody else.
+    """
+    if not handles:
+        return []
     if history_days:
-        return f"{history_days} days", f"explicit {history_days}-day window"
+        return [(f"{history_days} days", list(handles))]
 
-    marks = [r["last_polled_at"] for r in conn.execute(
-        f"SELECT last_polled_at FROM account WHERE handle IN "
-        f"({','.join('?' * len(handles))})", handles).fetchall()] if handles else []
+    marks = {r["handle"]: r["last_polled_at"] for r in conn.execute(
+        f"SELECT handle, last_polled_at FROM account WHERE handle IN "
+        f"({','.join('?' * len(handles))})", handles).fetchall()}
 
-    if not marks or any(m is None for m in marks):
-        return "30 days", "never-polled account(s) -> 30 days of history"
+    groups: dict[str, list[str]] = {}
+    for h in handles:
+        # A handle with no account row has never been polled by definition.
+        groups.setdefault(_window_for(marks.get(h)), []).append(h)
 
-    age = (dt.datetime.now(dt.timezone.utc)
-           - dt.datetime.fromisoformat(min(marks))).days + 2
-    days = max(age, 3)
-    return f"{days} days", f"incremental -> posts newer than {days} days"
+    # Widest window first: new accounts are the ones with nothing on the
+    # calendar yet, so they are what you are waiting to see.
+    return sorted(groups.items(), key=lambda kv: -int(kv[0].split()[0]))
 
 
 def relabel(conn: sqlite3.Connection) -> None:
@@ -51,12 +75,24 @@ def relabel(conn: sqlite3.Connection) -> None:
 
 def poll(conn: sqlite3.Connection, source, extractor, handles: list[str],
          limit: int = 20, newer_than: str | None = None,
-         max_posts: int | None = None, log=lambda *_: None) -> dict:
-    """Run every stage for `handles`. Returns per-stage counts."""
+         max_posts: int | None = None, log=lambda *_: None,
+         groups: list[tuple[str, list[str]]] | None = None) -> dict:
+    """Run every stage for `handles`. Returns per-stage counts.
+
+    `groups` fetches each set of handles under its own window (see
+    `fetch_windows`); `newer_than` puts them all under one. Only the ingest
+    stage repeats -- extraction, series, dedupe and geocode see the union once,
+    because they work off what is in the database rather than what was fetched.
+    """
     stats: dict = {}
 
-    stats["ingested"] = pipeline.ingest(conn, source, handles, limit,
-                                        newer_than=newer_than)
+    batches = groups if groups is not None else [(newer_than, list(handles))]
+    stats["ingested"] = 0
+    for window, batch in batches:
+        if len(batches) > 1:
+            log(f"fetching {len(batch)} account(s), window {window}")
+        stats["ingested"] += pipeline.ingest(conn, source, batch, limit,
+                                             newer_than=window)
     log(f"ingested {stats['ingested']} new posts")
 
     stats["processed"] = pipeline.process(conn, extractor, max_posts)

@@ -163,8 +163,9 @@ def cmd_run_once(args) -> None:
     # Measured on real data: posts older than 30 days produced 3% of upcoming
     # events while being 18% of fetches, so the window is worth narrowing.
     with db.session(args.db) as conn:
-        newer_than, why = runner.fetch_window(conn, handles, args.history_days)
-    print(why)
+        groups = runner.fetch_windows(conn, handles, args.history_days)
+    for window, batch in groups:
+        print(f"{len(batch)} account(s) -> posts newer than {window}")
 
     est = source.estimate_cost(handles, args.limit)
     print(f"{len(handles)} accounts x {args.limit} posts -> ~${est:.2f} scraping")
@@ -180,7 +181,7 @@ def cmd_run_once(args) -> None:
 
     with db.session(args.db) as conn:
         runner.poll(conn, source, _extractor(args.rung), handles, args.limit,
-                    newer_than=newer_than, max_posts=args.max_posts, log=print)
+                    groups=groups, max_posts=args.max_posts, log=print)
 
 
 def cmd_import_spike(args) -> None:
