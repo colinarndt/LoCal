@@ -25,9 +25,8 @@ service and no account.
 **`run-once` spends real money.** Two paid APIs: Apify per scraped post, Anthropic
 per model call.
 
-Measured against 8 real venue accounts: venues post ~1.1×/day, not the 12×/day you
-might assume. At **50 accounts that's ~$10/month** on the default all-Haiku
-configuration, ~$32/month if you escalate extraction to Opus. Scraping is
+Measured against 8 real venue accounts: venues post ~1.1×/day. **50 accounts would be ~$10/month** on the default all-Haiku
+configuration, ~$32/month if you do image extraction with Opus. Scraping is
 ~$0.07/account/month, so adding accounts is nearly free — the practical ceiling is
 how many you can curate. Full breakdown in [SPEC.md §8](SPEC.md).
 
