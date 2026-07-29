@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-DB_PATH = Path(__file__).parent.parent / "data" / "calendar.db"
+from .paths import DB_PATH  # noqa: F401  (re-exported; callers import from here)
 
 SCHEMA = """
 -- Raw provider output. Never edited after insert.
@@ -107,6 +107,26 @@ CREATE TABLE IF NOT EXISTS account (
     status           TEXT NOT NULL DEFAULT 'candidate',  -- candidate | approved | rejected
     proposed_reason  TEXT
 );
+
+-- Money. One row per paid call, appended and never edited.
+--
+-- Deliberately not derived from `extraction`: that table predates any token
+-- accounting, so spend before this table existed cannot be reconstructed. The
+-- UI reports "since tracking started" rather than pretending otherwise.
+CREATE TABLE IF NOT EXISTS spend (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at        TEXT NOT NULL,        -- ISO 8601 UTC
+    provider           TEXT NOT NULL,        -- anthropic | apify
+    detail             TEXT,                 -- model id, or apify actor id
+    usd                REAL NOT NULL,
+    units              REAL,                 -- apify: items scraped. anthropic: null.
+    estimated          INTEGER NOT NULL DEFAULT 0,  -- 1 when the provider gave no actual
+    input_tokens       INTEGER NOT NULL DEFAULT 0,
+    output_tokens      INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_spend_at ON spend(occurred_at);
 """
 
 # Columns added after the first release. sqlite has no "ADD COLUMN IF NOT EXISTS",
@@ -159,5 +179,28 @@ def session(path: Path | str = DB_PATH) -> Iterator[sqlite3.Connection]:
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+@contextmanager
+def read_session(path: Path | str = DB_PATH) -> Iterator[sqlite3.Connection]:
+    """A connection for reads only, skipping everything `connect` does on open.
+
+    `connect` runs the schema, the migrations, and the stale-account self-heal.
+    That last one is a write, and behind a running fetch's write lock it waits
+    out `busy_timeout` -- measured at 5.7s against a 6s lock, and up to 30s in
+    practice. Fine for a CLI command; on the AppKit main thread it freezes the
+    menu bar at exactly the moment someone opens it to watch a fetch.
+
+    Readers never block writers in WAL, so this stays responsive. The short
+    timeout is deliberate: a UI path should fail fast and show stale numbers
+    rather than beachball.
+    """
+    conn = sqlite3.connect(path, timeout=2)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 2000")
+    try:
+        yield conn
     finally:
         conn.close()

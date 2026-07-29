@@ -15,13 +15,12 @@ from pathlib import Path
 
 import anthropic
 
-from . import prompts
+from . import prompts, spend
+from .paths import MEDIA_DIR
 
 # SPEC section 3 escalation ladder. Rung 1 passed Phase 0 and is production.
 RUNGS = {1: "claude-haiku-4-5", 2: "claude-sonnet-5", 3: "claude-opus-5"}
 DEFAULT_RUNG = 1
-
-MEDIA_DIR = Path(__file__).parent.parent / "data" / "media"
 
 
 def sniff_media_type(data: bytes) -> str:
@@ -79,11 +78,15 @@ def _content(post: dict, stage: str, media_dir: Path) -> list[dict]:
 
 class Extractor:
     def __init__(self, client: anthropic.Anthropic | None = None, rung: int = DEFAULT_RUNG,
-                 media_dir: Path = MEDIA_DIR):
+                 media_dir: Path = MEDIA_DIR, meter: spend.Meter | None = None):
         self.client = client or anthropic.Anthropic()
         self.rung = rung
         self.model = RUNGS[rung]
         self.media_dir = media_dir
+        # Cost accrues here and is drained by the pipeline, which is the layer
+        # that holds a database connection. `discovery.propose` borrows this
+        # extractor's client, so it reports into the same meter.
+        self.meter = meter if meter is not None else spend.Meter()
 
     def run(self, post: dict, stage: str) -> dict:
         """Return parsed model output, or {"_error": ...}. Never raises."""
@@ -98,7 +101,13 @@ class Extractor:
                 output_config={"format": {"type": "json_schema", "schema": schema}},
             )
         except Exception as exc:
+            # No response means no usage object and nothing billed -- a request
+            # rejected before the model ran costs nothing.
             return {"_error": f"{type(exc).__name__}: {exc}"}
+
+        # Metered before any early return below. A refusal is an HTTP 200 that
+        # consumed tokens, so it is billed exactly like a useful answer.
+        self.meter.add_anthropic(self.model, getattr(resp, "usage", None))
 
         if resp.stop_reason == "refusal":
             return {"_error": "refusal", "_stop_details": str(resp.stop_details)}

@@ -13,6 +13,12 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .DS_Store
+*.egg-info/
+
+# PyInstaller output. The .app is a release artifact, not something the repo
+# carries -- and an unsigned one is only good on the machine that built it.
+build/
+dist/
 
 # Scraped content and model output — regenerable, and not ours to redistribute.
 # This is the line SPEC §11 draws: caching flyers and captions locally is fine

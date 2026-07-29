@@ -112,6 +112,9 @@ def propose(extractor, description: str, existing: list[str], city: str | None =
             messages=[{"role": "user", "content": prompt}],
             output_config={"format": {"type": "json_schema", "schema": PROPOSE_SCHEMA}},
         )
+        # Metered before the refusal and parse checks below: every one of them
+        # returns [], and all of them still cost money.
+        extractor.meter.add_anthropic(extractor.model, getattr(resp, "usage", None))
         if resp.stop_reason == "refusal":
             return []
         text = next((b.text for b in resp.content if b.type == "text"), None)

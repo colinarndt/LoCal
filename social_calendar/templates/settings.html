@@ -86,6 +86,17 @@
     <input type="text" id="country" name="country" value="{{ cfg['country'] }}">
     <div class="hint">Used only to disambiguate postal-code lookups.</div>
   </div>
+  <div class="field">
+    <label for="show_in_dock">
+      <input type="checkbox" id="show_in_dock" name="show_in_dock"
+             {{ 'checked' if cfg.get('show_in_dock') }}>
+      Show in the Dock and Cmd-Tab
+    </label>
+    <div class="hint">Mac app only. Off means it lives in the menu bar alone, so
+      Cmd-Tab cannot reach it. The running app picks this up within 30 seconds —
+      or toggle it instantly from its menu.</div>
+  </div>
+
   <div class="field"><button type="submit">Save</button></div>
 </form>
 
@@ -101,8 +112,9 @@
   </ul>
   <p class="hint">Keys are not editable here on purpose. This app binds
     <code>0.0.0.0</code> with no login so your phone can reach it, which would make
-    a key field on this page a key field for everyone on the network. Set them with
-    <code>python -m social_calendar.cli init</code>, or edit <code>.env</code>.</p>
+    a key field on this page a key field for everyone on the network. Set them in
+    the Mac app under <b>API&nbsp;Keys…</b> — a native window nothing on the
+    network can reach — or with <code>social-calendar init</code>.</p>
 </div>
 
 <footer>Settings live in <code>config.json</code>; keys live in <code>.env</code>.

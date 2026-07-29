@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "instagram-calendar"
+version = "0.1.0"
+description = "Turns Instagram event announcements into a filterable local calendar and ICS feed."
+readme = "README.md"
+requires-python = ">=3.11"
+
+dependencies = [
+    "anthropic>=0.40",
+    "apify-client>=1.7",
+    "python-dotenv>=1.0",
+    "flask>=3.0",
+    # Windows ships no IANA tz database, so zoneinfo rejects every timezone name
+    # and `init` silently falls back to the default.
+    "tzdata>=2024.1; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+# The menubar app. Kept optional so a headless/Linux install does not pull in
+# a macOS-only dependency tree.
+app = [
+    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-WebKit>=10.0; sys_platform == 'darwin'",
+]
+
+[project.scripts]
+social-calendar = "social_calendar.cli:main"
+social-calendar-web = "social_calendar.web:main"
+
+[tool.setuptools.packages.find]
+include = ["social_calendar*"]
+
+# Jinja templates are loaded from `Path(__file__).parent / "templates"`, so they
+# must travel with the package -- an install without them serves 500s on every
+# page, and py2app needs them declared here to bundle them at all.
+[tool.setuptools.package-data]
+social_calendar = ["templates/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

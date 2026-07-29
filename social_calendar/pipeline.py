@@ -11,7 +11,7 @@ import datetime as dt
 import json
 import sqlite3
 
-from . import dedupe, prompts, validate
+from . import dedupe, prompts, spend, validate
 from .sources import IngestionSource, download_images, to_row
 
 
@@ -25,9 +25,15 @@ def ingest(conn: sqlite3.Connection, source: IngestionSource, handles: list[str]
            limit: int = 20, fetch_media: bool = True,
            newer_than: str | None = None) -> int:
     try:
-        posts = source.fetch_recent(handles, limit, newer_than=newer_than)
-    except TypeError:
-        posts = source.fetch_recent(handles, limit)   # sources without a window
+        try:
+            posts = source.fetch_recent(handles, limit, newer_than=newer_than)
+        except TypeError:
+            posts = source.fetch_recent(handles, limit)   # sources without a window
+    finally:
+        # The scrape is billed whether or not anything downstream succeeds, so
+        # the ledger is written before any of it can raise.
+        if spend.drain_into(conn, getattr(source, "meter", None)):
+            conn.commit()
     new = 0
     for p in posts:
         if conn.execute("SELECT 1 FROM source_post WHERE post_id=?", (p.post_id,)).fetchone():
@@ -104,6 +110,9 @@ def process(conn: sqlite3.Connection, extractor, limit: int | None = None) -> di
         post = _post_dict(row)
         # Commit per post. Holding one transaction across hundreds of model calls
         # locks the database for the whole run and takes the web UI down with it.
+        # Draining here rather than at the end of the body means the previous
+        # post's spend lands even though every branch below can `continue`.
+        spend.drain_into(conn, extractor.meter)
         conn.commit()
         if i % 10 == 0 or i == len(rows):
             print(f"  ...{i}/{len(rows)} posts", flush=True)
@@ -133,6 +142,8 @@ def process(conn: sqlite3.Connection, extractor, limit: int | None = None) -> di
             continue
 
         _insert_event(conn, post, eid, out, stats)
+    # The last post's calls have not been drained by the loop head yet.
+    spend.drain_into(conn, extractor.meter)
     conn.commit()
     return stats
 

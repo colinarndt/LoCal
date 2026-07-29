@@ -3,7 +3,8 @@
 Deliberately split from the API keys. Secrets stay in `.env` (read only through
 `os.getenv`, never written by this app); everything here is non-secret and lives
 in `config.json`, so the web settings page can rewrite it without ever holding a
-file that contains credentials.
+file that contains credentials. Both live in the app's data directory -- see
+`paths.py` for why that is not the source tree.
 
 Written by `cli init`, edited by `/settings`, read by everything else.
 """
@@ -15,9 +16,7 @@ import json
 import zoneinfo
 from pathlib import Path
 
-ROOT = Path(__file__).parent.parent
-CONFIG_PATH = ROOT / "config.json"
-ENV_PATH = ROOT / ".env"
+from .paths import CONFIG_PATH, ENV_PATH  # noqa: F401  (re-exported; callers import from here)
 
 # Asked for by `cli init`, reported (present/absent, never the value) by /settings.
 API_KEYS = [
@@ -36,7 +35,37 @@ DEFAULTS = {
     "radius_miles": 25.0,
     "timezone": "America/New_York",
     "country": "USA",
+    # Mac app only. Off by default: it is a menu bar app, and a Dock tile for
+    # something that mostly runs a nightly job is clutter. On means a Dock icon
+    # and a Cmd-Tab entry -- see `app.apply_dock_policy`.
+    "show_in_dock": False,
 }
+
+
+def write_env(values: dict[str, str], replace: bool = False) -> None:
+    """Store API keys, mode 0600. The only file this app writes that holds secrets.
+
+    `replace=False` (what `init` does) appends only keys that are not already
+    present, so re-running setup cannot clobber a working key with a blank field.
+    `replace=True` is for the app's key window, where the whole point may be to
+    correct a key that is present but wrong.
+    """
+    existing = ENV_PATH.read_text() if ENV_PATH.exists() else ""
+    kept = []
+    for line in existing.splitlines():
+        name = line.split("=", 1)[0].strip()
+        if replace and name in values and values[name]:
+            continue        # about to be re-added with the new value
+        kept.append(line)
+
+    present = {ln.split("=", 1)[0].strip() for ln in kept}
+    for key, value in values.items():
+        if value and key not in present:
+            kept.append(f"{key}={value}")
+
+    ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ENV_PATH.write_text("\n".join(ln for ln in kept if ln.strip()) + "\n")
+    ENV_PATH.chmod(0o600)
 
 
 def system_timezone() -> str:

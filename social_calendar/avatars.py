@@ -9,18 +9,27 @@ from __future__ import annotations
 
 import sys
 import urllib.request
-from pathlib import Path
 
-AVATAR_DIR = Path(__file__).parent.parent / "data" / "avatars"
+from . import spend
+from .paths import AVATAR_DIR
+
 ACTOR_ID = "apify/instagram-profile-scraper"
 
 
-def fetch(client, handles: list[str]) -> dict[str, dict]:
-    """handle -> {full_name, pic_url}. Empty dict on failure; never raises."""
+def fetch(client, handles: list[str], meter=None) -> dict[str, dict]:
+    """handle -> {full_name, pic_url}. Empty dict on failure; never raises.
+
+    This is a paid actor call (~$2.60/1000 profiles), so it reports into `meter`
+    when one is supplied -- a scrape that succeeds and then fails to parse still
+    costs money.
+    """
     if not handles:
         return {}
     try:
         run = client.actor(ACTOR_ID).call(run_input={"usernames": handles})
+        if meter is not None:
+            meter.add_apify(ACTOR_ID, run, units=len(handles),
+                            fallback_usd=len(handles) * 0.0026)
         out = {}
         for item in client.dataset(run.default_dataset_id).iterate_items():
             h = item.get("username")
@@ -65,7 +74,9 @@ def backfill(conn, client, limit: int = 60) -> dict:
     if not handles:
         return {"requested": 0, "saved": 0}
 
-    profiles = fetch(client, handles)
+    meter = spend.Meter()
+    profiles = fetch(client, handles, meter=meter)
+    spend.drain_into(conn, meter)
     saved = 0
     for h in handles:
         p = profiles.get(h) or {}

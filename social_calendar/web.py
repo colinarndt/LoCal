@@ -24,22 +24,24 @@ from dotenv import load_dotenv
 from flask import (Flask, Response, abort, redirect, render_template, request,
                    send_from_directory, url_for)
 
-from . import config, db, discovery, geo, runner
+from . import config, db, discovery, geo, paths, runner, spend
 
 # Only so /settings can report whether a key is present. Values are never
 # rendered, logged, or accepted over HTTP -- see the note above that route.
-load_dotenv(config.ROOT / ".env.local")
-load_dotenv(config.ROOT / ".env")
+load_dotenv(paths.ENV_LOCAL_PATH)
+load_dotenv(paths.ENV_PATH)
 
+# Templates ship *with* the package (read-only, and bundled into the .app);
+# everything writable comes from `paths`. Keeping the two straight is the whole
+# point of that module.
 app = Flask(__name__, template_folder=str(Path(__file__).parent / "templates"))
 app.config["DB"] = str(db.DB_PATH)
 # Single-user local app: pick up template edits without a restart.
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.jinja_env.auto_reload = True
 
-MEDIA_DIRS = [Path(__file__).parent.parent / "data" / "media",
-              Path(__file__).parent.parent / "spike" / "posts" / "media"]
-AVATAR_DIR = Path(__file__).parent.parent / "data" / "avatars"
+MEDIA_DIRS = [paths.MEDIA_DIR]
+AVATAR_DIR = paths.AVATAR_DIR
 
 
 @app.route("/avatar/<path:name>")
@@ -322,7 +324,10 @@ def settings():
     if request.method == "POST":
         form = request.form
         new = {"radius_miles": cfg["radius_miles"], "timezone": cfg["timezone"],
-               "country": (form.get("country") or cfg["country"]).strip()}
+               "country": (form.get("country") or cfg["country"]).strip(),
+               # Unchecked boxes are simply absent from the form, so presence is
+               # the value. Only the Mac app reads it.
+               "show_in_dock": form.get("show_in_dock") == "on"}
 
         try:
             new["radius_miles"] = max(1.0, min(500.0, float(form.get("radius_miles"))))
@@ -401,21 +406,33 @@ def _fetch_worker(handles: list[str], db_path: str, limit: int) -> None:
             JOB.update(state="error", message="worker exited without a result")
 
 
-def _start_fetch(handles: list[str], label: str):
-    """Claim the single job slot and hand the batch to a worker thread."""
+def start_fetch(handles: list[str], label: str) -> str | None:
+    """Claim the single job slot and hand the batch to a worker thread.
+
+    Returns None on success or an error slug. Deliberately free of any request
+    context: the menubar app's timer and its "Fetch Now" item call this directly,
+    which is what keeps the scheduled run and a click in the UI sharing one lock
+    instead of racing each other into two concurrent scrapes.
+    """
     missing = [k for k, _, _ in config.API_KEYS if not os.getenv(k)]
     if missing:
-        return redirect(url_for("discover", err="no-keys"))
+        return "no-keys"
 
     with _JOB_LOCK:
         if JOB["state"] == "running":
-            return redirect(url_for("discover", err="busy"))
+            return "busy"
         JOB.update(state="running", handle=handles[0] if len(handles) == 1 else None,
                    label=label, message="starting...", stats=None)
 
     threading.Thread(target=_fetch_worker, daemon=True,
                      args=(handles, app.config["DB"], FETCH_LIMIT)).start()
-    return redirect(url_for("discover"))
+    return None
+
+
+def _start_fetch(handles: list[str], label: str):
+    """Route-facing wrapper: same work, but answers with a redirect."""
+    err = start_fetch(handles, label)
+    return redirect(url_for("discover", **({"err": err} if err else {})))
 
 
 @app.post("/discover/<handle>/fetch")
@@ -444,6 +461,18 @@ def fetch_all():
 def jobs():
     """Polled by /discover so the button can report progress without a reload."""
     return JOB
+
+
+@app.route("/spend.json")
+def spend_json():
+    """What this install has actually cost. Read by the menu bar.
+
+    `since` is null on a fresh ledger and is the first recorded call otherwise --
+    never an install date. Spend predating the ledger cannot be reconstructed,
+    so the caller must label this "since tracking started" rather than "total".
+    """
+    with db.session(app.config["DB"]) as conn:
+        return spend.totals(conn)
 
 
 @app.route("/discover")

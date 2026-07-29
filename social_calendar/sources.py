@@ -14,7 +14,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-MEDIA_DIR = Path(__file__).parent.parent / "data" / "media"
+from . import spend
+from .paths import MEDIA_DIR
+
 MAX_IMAGES = 3
 ACTOR_ID = "apify/instagram-scraper"
 
@@ -68,15 +70,20 @@ class ApifySource:
     """apify/instagram-scraper. Posts and reels only -- stories need an
     authenticated session and are Phase 4 (SPEC section 6)."""
 
-    def __init__(self, token: str):
+    def __init__(self, token: str, meter: spend.Meter | None = None):
         from apify_client import ApifyClient
 
         self.client = ApifyClient(token)
+        # Drained by `pipeline.ingest`, which holds the database connection.
+        self.meter = meter if meter is not None else spend.Meter()
 
     def source_name(self) -> str:
         return "apify"
 
     def estimate_cost(self, handles: list[str], limit: int) -> float:
+        """Pre-flight guess, shown before you click. Only ever an upper bound --
+        actual billed cost comes back on the finished run and is what gets
+        recorded to the ledger."""
         return len(handles) * limit * 0.002  # ~$2.00 per 1,000 posts
 
     def fetch_recent(self, handles: list[str], limit: int = 20,
@@ -94,10 +101,21 @@ class ApifySource:
             # posts we already stored.
             run_input["onlyPostsNewerThan"] = newer_than
         run = self.client.actor(ACTOR_ID).call(run_input=run_input)
-        return self._harvest(run, handles)
+        # Metered here rather than in `_harvest`, which `harvest_run` also calls
+        # against an already-paid run -- doing it there would bill twice. In a
+        # `finally` because the run is charged the moment it completes, and
+        # harvesting it is exactly the step already known to fail on its own.
+        posts: list[RawPost] = []
+        try:
+            posts = self._harvest(run, handles)
+        finally:
+            self.meter.add_apify(ACTOR_ID, run, units=len(posts),
+                                 fallback_usd=self.estimate_cost(handles, limit))
+        return posts
 
     def harvest_run(self, run_id: str, handles: list[str]) -> list[RawPost]:
-        """Pull a run that already finished. Free -- it is already paid for.
+        """Pull a run that already finished. Free -- it is already paid for,
+        which is also why this path records no spend.
 
         Exists because the scrape succeeding while the client fails downstream
         is a failure mode we have already hit once.

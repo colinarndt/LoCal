@@ -16,17 +16,21 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import avatars, db, discovery, geo, pipeline, runner
-from .config import API_KEYS, ENV_PATH
+from . import avatars, db, discovery, geo, migrate, paths, pipeline, runner, spend
+from .config import API_KEYS, ENV_PATH, write_env
 from .sources import ApifySource, LocalSpikeSource, read_accounts
 
+# `spike/` is the Phase 0 corpus: author-only, gitignored, and read-only. It is
+# a source-tree asset rather than user data, so unlike everything in `paths` it
+# stays anchored to the checkout -- `import-spike` is a dev command and does not
+# exist for someone running the packaged app.
 ROOT = Path(__file__).parent.parent
 ACCOUNTS = ROOT / "spike" / "accounts.txt"
 
 
 def _env() -> None:
-    load_dotenv(ROOT / ".env.local")
-    load_dotenv(ROOT / ".env")
+    load_dotenv(paths.ENV_LOCAL_PATH)
+    load_dotenv(paths.ENV_PATH)
 
 
 def _extractor(rung: int):
@@ -43,20 +47,6 @@ def _extractor(rung: int):
 def _ask(prompt: str, default: str = "") -> str:
     got = input(f"{prompt}{f' [{default}]' if default else ''}: ").strip()
     return got or default
-
-
-def _write_env(values: dict[str, str]) -> None:
-    """Append missing keys to .env, never rewriting one that is already set.
-
-    Mode 0600: this is the only file in the project that holds secrets.
-    """
-    existing = ENV_PATH.read_text() if ENV_PATH.exists() else ""
-    lines = [existing.rstrip("\n")] if existing.strip() else []
-    for key, value in values.items():
-        if value and f"{key}=" not in existing:
-            lines.append(f"{key}={value}")
-    ENV_PATH.write_text("\n".join(lines) + "\n")
-    ENV_PATH.chmod(0o600)
 
 
 def cmd_init(args) -> None:
@@ -111,7 +101,7 @@ def cmd_init(args) -> None:
         print(f"  {label} — {url}")
         values[key] = _ask(f"  {key}", "")
     if any(values.values()):
-        _write_env(values)
+        write_env(values)
         print(f"wrote {ENV_PATH.name} (mode 600)")
     elif values:
         print("  skipped — add them to .env when you have them.")
@@ -122,9 +112,11 @@ def cmd_init(args) -> None:
     desc = _ask("Describe what you like (blank to skip)", "")
     if desc and (values.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")):
         os.environ.setdefault("ANTHROPIC_API_KEY", values.get("ANTHROPIC_API_KEY", ""))
-        cand = discovery.propose(_extractor(1), desc, [], city=city)
+        ex = _extractor(1)
+        cand = discovery.propose(ex, desc, [], city=city)
         with db.session(args.db) as conn:
             discovery.stage(conn, cand)
+            spend.drain_into(conn, ex.meter)
         print(f"  staged {len(cand)} candidate account(s) for review.")
         for c in cand:
             print(f"    @{c['handle']} — {c.get('why','')}")
@@ -266,7 +258,11 @@ def cmd_discover(args) -> None:
 
         if args.describe:
             ex = _extractor(args.rung)
-            proposed = discovery.propose(ex, args.describe, discovery.approved_handles(conn))
+            try:
+                proposed = discovery.propose(ex, args.describe,
+                                             discovery.approved_handles(conn))
+            finally:
+                spend.drain_into(conn, ex.meter)
             print(f"{len(proposed)} proposed from interests")
             found += proposed
 
@@ -287,6 +283,19 @@ def cmd_decide(args) -> None:
         print(f"poll rotation is now {len(discovery.approved_handles(conn))} accounts")
 
 
+def cmd_migrate(args) -> None:
+    """Copy an in-tree install into the app data directory. Idempotent."""
+    print(f"copying into {paths.HOME}")
+    report = migrate.run()
+    if not report:
+        print("  nothing to do -- already migrated, or no in-tree data found.")
+        return
+    for line in report:
+        print(f"  {line}")
+    print(f"\nOriginals were left where they were. Once the app looks right, "
+          f"{migrate.SOURCE_ROOT / 'data'} can be deleted.")
+
+
 def cmd_stats(args) -> None:
     with db.session(args.db) as conn:
         def q(sql: str) -> int:
@@ -301,6 +310,19 @@ def cmd_stats(args) -> None:
         print(f"series:        {q('SELECT COUNT(*) FROM series')}")
         print(f"accounts:      {q('SELECT COUNT(*) FROM account')} "
               f"({q('SELECT COUNT(*) FROM account WHERE is_polled=1')} polled)")
+
+        t = spend.totals(conn)
+        if t["since"]:
+            by = "  ".join(f"{k} ${v:.2f}" for k, v in sorted(t["by_provider"].items()))
+            print(f"\nspend:         ${t['all_time']:.2f} since {t['since'][:10]} "
+                  f"({t['calls']} paid calls)")
+            print(f"  last 24h:    ${t['last_24h']:.2f}")
+            print(f"  by provider: {by}")
+        else:
+            # Not "$0.00 all time": the ledger postdates this install, so a zero
+            # here means nothing has been recorded yet, not nothing was spent.
+            print("\nspend:         nothing recorded yet (tracking starts at the next run)")
+
         print("\nnext 10 events:")
         for r in conn.execute(
             "SELECT starts_at, title, venue_name, needs_review FROM event "
@@ -376,7 +398,17 @@ def main() -> None:
     s = sub.add_parser("stats", help="what is in the database")
     s.set_defaults(func=cmd_stats)
 
+    m = sub.add_parser("migrate", help="copy an in-tree install into the app data directory")
+    m.set_defaults(func=cmd_migrate)
+
     args = ap.parse_args()
+    # Cheap check, and the one moment the user is looking at a terminal. Skipped
+    # for `migrate` itself, which would otherwise advertise what it is about to do.
+    if args.func is not cmd_migrate and migrate.pending():
+        print(f"  !! found an in-tree install at {migrate.SOURCE_ROOT / 'data'} that has not "
+              f"moved to {paths.HOME}.\n"
+              f"     Run `social-calendar migrate` first, or this run starts from empty.\n",
+              file=sys.stderr)
     args.func(args)
 
 
