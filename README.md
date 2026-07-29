@@ -4,10 +4,9 @@
 
 # Instagram Calendar
 
-**The best things happening in your city get announced on Instagram and nowhere else.**
+**Sometimes the best local events get announced on Instagram and nowhere else.**
 
-No listing site has them. No newsletter covers them. A venue posts a flyer to its
-story, 400 people see it, and you find out on Monday that you missed it.
+A venue posts a flyer to its story, 400 people see it, and you find out on Monday that you missed it.
 
 This app reads those posts for you and puts the events on a calendar.
 
@@ -25,18 +24,15 @@ This app reads those posts for you and puts the events on a calendar.
 
 ## How it works
 
-You pick the accounts worth watching: venues, promoters, the record store that
-books shows in its back room. Once a day the app checks what they posted.
+You pick the accounts worth watching: venues, local acts, even your friends' accounts. 
+Once a day the app checks for new posts (as long as it's running in your menu bar).
 
-Most posts are not events. A photo dump from Saturday, a staff shoutout, a meme.
-A cheap first pass reads each caption and throws those out. What survives goes to
-a model that **reads the flyer image**, which is where the date, the set times and
-the lineup usually live. Captions rarely repeat what the poster already put in
-the picture.
+Most posts are not events. A cheap first pass reads each caption and throws those out. 
+Actual event posts get passed to a model that **reads the flyer image**, where the date, 
+the set times and the lineup usually live. 
 
-Then it cleans up after itself. The venue, the promoter and three collab reposts
-all announced the same show, so it collapses them into one event. It looks up
-where the venue actually is and drops anything in the wrong city. It works out
+Then it dedupes events in case the same one's been listed before. It looks up
+where the venue actually is and drops anything not in your city. It even works out
 which nights "every Thursday" covers.
 
 What you get is a calendar you can filter by category, neighborhood, venue or
