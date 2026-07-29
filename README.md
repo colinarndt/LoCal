@@ -78,16 +78,20 @@ a day, and you can open the calendar whenever you want.
 
 This part is not free, and pretending otherwise would waste your money.
 
-Two APIs charge per use. Fetching posts costs about **$0.07 per account per
-month**. Reading them costs more, because that is a model call per candidate post.
+Two APIs charge per use. Fetching posts is the cheap half, about **$0.07 per
+account per month**. Reading them costs more, because that is a model call per
+candidate post.
 
 Measured against 8 real venue accounts, which post about once a day each:
 
-| Accounts you follow | Roughly per month |
+| Setup | Roughly per month |
 |---|---|
-| 10 | $2 |
-| 50 | $10 |
-| 50, using the expensive model for flyers | $32 |
+| 50 accounts, out of the box | **$10** |
+| 50 accounts, best model reading the flyers | **$32** |
+
+Both numbers come from [SPEC.md §8](SPEC.md). Cost tracks how many posts you
+fetch, so it scales more or less with account count: call it $0.20 per account
+per month, and 10 accounts lands near $2.
 
 Adding accounts is close to free. The real limit is how many you can be bothered
 to curate.
