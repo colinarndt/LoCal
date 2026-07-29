@@ -15,10 +15,15 @@ __pycache__/
 .DS_Store
 *.egg-info/
 
-# PyInstaller output. The .app is a release artifact, not something the repo
-# carries -- and an unsigned one is only good on the machine that built it.
+# PyInstaller output. The .app and the .dmg are release artifacts -- attach them
+# to a tagged release rather than carrying 26MB of rebuildable binary per commit.
 build/
 dist/
+
+# Compiled by make_icon.py, which is the real source for the artwork. Run it
+# before `pyinstaller` on a fresh clone -- make_dmg.sh already does.
+AppIcon.icns
+AppIcon.iconset/
 
 # Scraped content and model output — regenerable, and not ours to redistribute.
 # This is the line SPEC §11 draws: caching flyers and captions locally is fine

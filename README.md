@@ -73,7 +73,23 @@ land in `.env` (mode 600) and are **only** settable from the CLI — see
 
 ## Running it
 
-On a Mac, as an app:
+On a Mac, as an app: open the `.dmg` and drag **Instagram Calendar** to
+Applications. No Python, no checkout — the runtime is inside the bundle. Build
+the image yourself with `./make_dmg.sh` (see [Building the .app](#building-the-app));
+there is no published release to download yet.
+
+The app is signed, but not *notarized* — that needs a paid Apple Developer
+account. So macOS blocks the first launch. Once, to get past it: open it, dismiss
+the dialog, then **System Settings → Privacy & Security**, where a button offers
+to open it anyway. On macOS 15 and later that is the route; right-click → Open no
+longer clears it. Every launch after that is an ordinary double-click. If you
+would rather do it in one line:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Instagram Calendar.app"
+```
+
+Running from a checkout instead:
 
 ```bash
 pip install -e ".[app]"
@@ -184,19 +200,49 @@ your LAN.
 
 ```bash
 pip install pyinstaller
-pyinstaller --noconfirm InstagramCalendar.spec    # -> dist/Instagram Calendar.app
+./make_dmg.sh                 # -> dist/Instagram Calendar.dmg (~26MB)
 ```
 
-About 44MB, and self-contained: it carries its own Python and every dependency,
-so it runs with the repo and the virtualenv deleted. It stays that size because
-the ~200MB of cached flyers lives in Application Support rather than inside the
-bundle — if a build comes out around 250MB, that separation has broken.
+That draws the icon, builds the bundle, and wraps it in the drag-to-Applications
+image. To build the `.app` alone, or to re-wrap one you already built:
 
-The build is **ad-hoc signed**, which means it runs on the machine that built it
-and Gatekeeper rejects it anywhere else. Handing it to someone else needs a $99/yr
-Apple Developer account, a Developer ID signature, and notarization. That is the
-only thing standing between this and a distributable app; nothing in the code
-needs to change for it.
+```bash
+python make_icon.py                              # -> AppIcon.icns
+pyinstaller --noconfirm InstagramCalendar.spec    # -> dist/Instagram Calendar.app
+./make_dmg.sh --no-build                         # wrap the existing .app
+```
+
+`make_icon.py` *draws* the icon — a calendar page with a camera lens punched
+through it — with CoreGraphics and compiles the `.icns`, rather than checking in
+a binary nobody can edit. pyobjc is already a dependency, every size is rendered
+from the same geometry at its native pixel count instead of being downsampled
+from one master, and changing the artwork means editing constants at the top of
+the file.
+
+The app is about 44MB, and self-contained: it carries its own Python and every
+dependency, so it runs with the repo and the virtualenv deleted. It stays that
+size because the ~200MB of cached flyers lives in Application Support rather than
+inside the bundle — if a build comes out around 250MB, that separation has broken.
+
+The build is **ad-hoc signed**, not notarized. The signature is intact in the
+image — `codesign --verify --deep --strict` passes on the mounted app, which is
+what separates "Gatekeeper wants approval" from the "app is damaged" dead end —
+but `spctl` rejects it on policy, so a recipient has to approve it by hand once.
+See [Running it](#running-it). Removing that step needs a $99/yr Apple Developer
+account, a Developer ID signature, and notarization; nothing in the code has to
+change for it.
+
+Worth re-running after any change to how the image is staged, since copying a
+signed bundle is the step that breaks signatures:
+
+```bash
+codesign --verify --deep --strict --verbose=2 "/Volumes/Instagram Calendar/Instagram Calendar.app"
+```
+
+`hdiutil` builds the image because it ships with macOS. `create-dmg` is the
+usual pick and its extra value — background art, positioned icons — is a
+`.DS_Store` baked by driving Finder over AppleScript, which needs a logged-in
+session and fails under ssh or CI.
 
 (`py2app` is the more obvious choice for a Mac bundle and does not work here: its
 latest release reads `[project].dependencies` out of `pyproject.toml` as

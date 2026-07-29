@@ -70,7 +70,8 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="Instagram Calendar.app",
-    icon=None,
+    # Drawn by make_icon.py, which is the editable source for it.
+    icon="AppIcon.icns",
     bundle_identifier="com.colinarndt.instagram-calendar",
     info_plist={
         "CFBundleName": "Instagram Calendar",
