@@ -27,7 +27,14 @@ import os
 import sqlite3
 import sys
 
+from dotenv import load_dotenv
+
 from social_calendar import db, extract, paths, spend
+
+# Same order the CLI uses: .env.local wins over .env, and both lose to anything
+# already exported in the shell.
+load_dotenv(paths.ENV_LOCAL_PATH)
+load_dotenv(paths.ENV_PATH)
 
 BASELINE = "claude-haiku-4-5"
 
