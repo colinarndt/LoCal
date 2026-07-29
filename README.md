@@ -31,19 +31,13 @@ InstaCalendar reads those posts for you and drops everything onto a nice clean e
 
 ## Features
 
-**Filterssss.** Drilldown by event type, neighborhood, venue, IG account, date, or distance.
-
-**Tag the best ones.** Then come back later to see just the ones you want to check out. 
-
-**Refreshes automatically.** Once a day. Close the app and it will still refresh in the background.
-
-**Subscribe on your phone.** Create a perfect filter? Click "Subscribe to this calendar" to follow it on your phone.
-
-**No data leaves your Mac.** Everything is stored on your computer. No account, no server, no telemetry.
-
-**You get the last word.** Mark an event interested, hide it, or flag it. AI is good these days but not... perfect.
-
-**Costs are never a surprise.** The running total sits in the menu bar, counted from real usage. Anything that spends money tells you the cost first.
+- 🎛️ **Filterssss.** Zero in by event type, venue, neighborhood, IG account, upcoming dates, or distance.
+- ✅ **Confirm the good ones.** Come back later and pull up your shortlist.
+- 🌞 **Wake up to fresh events.** The app checks for new posts once a day, even with its window closed.
+- 📱 **Take it to your phone.** Subscribe to any filtered calendar from the app.
+- 🏠 **Keep it on your Mac.** Your calendar stays on your computer. No account, server, or telemetry.
+- 🫵 **You get the last word.** Confirm, hide, or flag any event. AI still needs an editor.
+- 💸 **Know what it costs.** The menu bar shows a running total from real usage, and the app quotes each paid action before it starts.
 
 ## How it works
 

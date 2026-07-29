@@ -23,7 +23,10 @@ a = Analysis(
     binaries=[],
     # Jinja loads these off the filesystem rather than by import, so nothing in
     # the dependency graph points at them. Undeclared, every page 500s.
-    datas=[("social_calendar/templates", "social_calendar/templates")],
+    datas=[
+        ("social_calendar/templates", "social_calendar/templates"),
+        ("social_calendar/static", "social_calendar/static"),
+    ],
     hiddenimports=[
         # Reached only through `from apify_client import ApifyClient` inside a
         # function body, which the static analysis does not follow.

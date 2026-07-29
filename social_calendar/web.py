@@ -163,10 +163,6 @@ def _filters(args) -> tuple[str, list]:
     elif args.get("when", "upcoming") == "upcoming":
         where.append("substr(e.starts_at,1,10) >= ?")
         params.append(dt.date.today().isoformat())
-    if until := args.get("until"):
-        where.append("substr(e.starts_at,1,10) <= ?")
-        params.append(until)
-
     return " AND ".join(where), params
 
 
@@ -305,7 +301,12 @@ def act(event_id: int, action: str):
                          (new, reason, event_id))
         else:
             conn.execute(f"UPDATE event SET {field}=? WHERE id=?", (new, event_id))
-    return redirect(request.referrer or url_for("index"))
+    if action == "confirm" and request.headers.get("X-Requested-With") == "fetch":
+        return {"confirmed": bool(new)}
+    destination = request.referrer or url_for("index")
+    if action == "confirm":
+        destination = f"{destination.split('#', 1)[0]}#event-{event_id}"
+    return redirect(destination)
 
 
 # --- settings -------------------------------------------------------------

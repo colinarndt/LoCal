@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Social Calendar</title>
+<title>InstaCalendar</title>
 <style>
   :root {
     --bg:#fbfaf8; --card:#fff; --ink:#1a1a1a; --muted:#6b6b6b; --line:#e5e2dd;
@@ -19,22 +19,25 @@
   .wrap { max-width:820px; margin:0 auto; padding:16px; }
   /* Narrow screens keep the header on one line -- the title and the links cost
      less vertical space shrunk and side by side than stacked. */
-  header { display:flex; justify-content:space-between; align-items:baseline;
+  header { display:flex; justify-content:space-between; align-items:center;
            gap:8px; flex-wrap:wrap; margin-bottom:4px; }
-  h1 { font-size:1.15rem; margin:0; letter-spacing:-0.01em; }
+  h1 { display:flex; align-items:center; gap:7px; min-width:0;
+       font-size:1.15rem; margin:0; letter-spacing:-0.01em; }
+  .brand-icon { width:28px; height:28px; flex:none; }
+  .brand-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .count { color:var(--muted); font-size:.8rem; }
   /* Phone widths keep the header on one line -- the title and the links cost less
      vertical space shrunk side by side than stacked. Below that the count no longer
      fits beside the title at all, so it falls back to wrapping. */
   @media (min-width:360px) {
     header { flex-wrap:nowrap; }
-    h1 { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .count { white-space:nowrap; flex-shrink:0; }
   }
   .count .inview { display:none; }
   @media (min-width:560px) {
     header { gap:12px; flex-wrap:wrap; }
     h1 { font-size:1.35rem; }
+    .brand-icon { width:32px; height:32px; }
     .count { font-size:.9rem; }
     .count .inview { display:inline; }
   }
@@ -45,8 +48,11 @@
   .subline { text-align:right; font-size:.85rem; margin:0 0 20px; }
   .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
   .row + .row { margin-top:8px; }
-  select, input[type=date], button { font:inherit; padding:6px 9px; border-radius:7px;
+  select, button { font:inherit; padding:6px 9px; border-radius:7px;
     border:1px solid var(--line); background:var(--bg); color:var(--ink); }
+  .filter-selects { display:grid; grid-template-columns:minmax(0,.7fr) minmax(0,1.15fr)
+                    minmax(0,1fr); }
+  .filter-selects select { width:100%; min-width:0; }
   button { cursor:pointer; }
   button.primary { background:var(--accent); color:#fff; border-color:transparent; }
   .chip { display:inline-flex; align-items:center; padding:6px 13px;
@@ -103,7 +109,7 @@
          letter-spacing:.08em; color:var(--muted); position:sticky; top:0;
          background:var(--bg); padding:6px 0; }
   .ev { background:var(--card); border:1px solid var(--line); border-radius:10px;
-        padding:12px 14px; margin-bottom:8px; }
+        padding:12px 14px; margin-bottom:8px; scroll-margin-top:42px; }
   .ev.review { border-left:3px solid var(--warn); }
   .ev h2 { margin:0 0 3px; font-size:1rem; font-weight:600; line-height:1.35; }
   .ev h2 a { color:inherit; text-decoration:none; }
@@ -122,10 +128,11 @@
   .actions button { font-size:.8rem; padding:4px 10px; }
   .actions form { display:inline; }
   .empty { text-align:center; color:var(--muted); padding:48px 0; }
-  .dist { font-size:.85rem; color:var(--muted); }
-  .dist input[type=range] { accent-color:var(--accent); flex:1; min-width:120px; max-width:200px; }
+  .date-distance { font-size:.85rem; color:var(--muted); }
+  .dist { display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center; }
+  .dist input[type=range] { accent-color:var(--accent); width:120px; min-width:80px; }
   .dist #rout { font-weight:600; color:var(--ink); min-width:1.4em; text-align:right; }
-  .dist .hint { font-size:.78rem; opacity:.75; }
+  .date-distance .hint { font-size:.78rem; opacity:.75; }
   .warnmsg { font-size:.82rem; color:var(--warn); background:var(--warn-bg);
              padding:6px 9px; border-radius:6px; }
   .hood { border-color:var(--accent); color:var(--accent); }
@@ -163,7 +170,8 @@
 <div class="wrap">
 
 <header>
-  <h1>Social Calendar</h1>
+  <h1><img class="brand-icon" src="{{ url_for('static', filename='icon.svg') }}" alt="">
+    <span class="brand-name">InstaCalendar</span></h1>
   <span class="count">
     {# calendar totals cover the whole grid, spill days included -- not just the month #}
     {{ total }} event{{ '' if total == 1 else 's' }}{% if view == 'calendar' %}<span class="inview"> in view</span>{% endif %}
@@ -200,19 +208,19 @@
       </label>
     {% endfor %}
   </div>
-  <div class="row">
-    <select name="hood">
-      <option value="">all neighborhoods</option>
-      {% for h in hoods %}
-        <option value="{{ h['neighborhood'] }}" {% if args.get('hood') == h['neighborhood'] %}selected{% endif %}>
-          {{ h['neighborhood'] }} ({{ h['n'] }})</option>
-      {% endfor %}
-    </select>
+  <div class="row filter-selects">
     <select name="venue">
       <option value="">all venues</option>
       {% for v in venues %}
         <option value="{{ v['venue_key'] }}" {% if args.get('venue') == v['venue_key'] %}selected{% endif %}>
           {{ v['label'] }} ({{ v['n'] }})</option>
+      {% endfor %}
+    </select>
+    <select name="hood">
+      <option value="">all neighborhoods</option>
+      {% for h in hoods %}
+        <option value="{{ h['neighborhood'] }}" {% if args.get('hood') == h['neighborhood'] %}selected{% endif %}>
+          {{ h['neighborhood'] }} ({{ h['n'] }})</option>
       {% endfor %}
     </select>
     <select name="account">
@@ -222,20 +230,21 @@
           @{{ a['handle'] }}</option>
       {% endfor %}
     </select>
+  </div>
+  <div class="row date-distance">
     <select name="when">
       <option value="upcoming" {% if args.get('when','upcoming')=='upcoming' %}selected{% endif %}>upcoming</option>
       <option value="all" {% if args.get('when')=='all' %}selected{% endif %}>all dates</option>
     </select>
-    <input type="date" name="until" value="{{ args.get('until','') }}" title="through">
-  </div>
-  <div class="row dist">
-    <label for="zip">within</label>
-    <output id="rout">{{ args.get('radius','5') }}</output><span>mi of</span>
-    <input type="range" name="radius" id="radius" min="1" max="25" step="1"
-           value="{{ args.get('radius','5') }}"
-           oninput="document.getElementById('rout').textContent=this.value">
-    <input type="text" name="zip" id="zip" inputmode="numeric" pattern="[0-9]{5}"
-           maxlength="5" placeholder="zip" value="{{ args.get('zip','') }}" size="6">
+    <div class="dist">
+      <label for="zip">within</label>
+      <output id="rout">{{ args.get('radius','5') }}</output><span>mi of</span>
+      <input type="range" name="radius" id="radius" min="1" max="100" step="1"
+             value="{{ args.get('radius','5') }}"
+             oninput="document.getElementById('rout').textContent=this.value">
+      <input type="text" name="zip" id="zip" inputmode="numeric" pattern="[0-9]{5}"
+             maxlength="5" placeholder="zip" value="{{ args.get('zip','') }}" size="6">
+    </div>
     <span class="hint">leave the zip blank to ignore distance</span>
   </div>
   {% if zip_failed %}
@@ -244,7 +253,7 @@
   {% endif %}
   <div class="row">
     <label class="chip"><input type="checkbox" name="confirmed" value="1"
-      {% if args.get('confirmed')=='1' %}checked{% endif %}> interested only</label>
+      {% if args.get('confirmed')=='1' %}checked{% endif %}> confirmed only</label>
     <label class="chip"><input type="checkbox" name="review" value="1"
       {% if args.get('review')=='1' %}checked{% endif %}> needs review</label>
     <button class="primary" type="submit">Filter</button>
@@ -259,7 +268,7 @@
        title="Download this view as a CSV -- import it into Google Sheets, Excel or Numbers">download CSV</a></p>
 
 {% macro card(e, when_label) %}
-    <article class="ev {% if e['needs_review'] %}review{% endif %}">
+    <article id="event-{{ e['id'] }}" class="ev {% if e['needs_review'] %}review{% endif %}">
      <div class="ev-body">
       <div class="ev-main">
       <h2>
@@ -281,14 +290,14 @@
         {% if e['occurrence_of'] %}<span class="badge">recurring</span>{% endif %}
         {% if e['source_count'] > 1 %}
           <span class="badge">{{ e['source_count'] }} posts</span>{% endif %}
-        {% if e['is_confirmed'] %}<span class="badge">✓ interested</span>{% endif %}
+        {% if e['is_confirmed'] %}<span class="badge confirmed-badge">✓ confirmed</span>{% endif %}
       </div>
       {% if e['needs_review'] %}
         <div class="review-note">{{ e['review_reason'] or 'flagged' }}</div>
       {% endif %}
       <div class="actions">
-        <form method="post" action="/event/{{ e['id'] }}/confirm">
-          <button type="submit">{{ 'not interested' if e['is_confirmed'] else 'interested' }}</button></form>
+        <form class="confirm-form" method="post" action="/event/{{ e['id'] }}/confirm">
+          <button type="submit">{{ 'unconfirm' if e['is_confirmed'] else 'confirm' }}</button></form>
         <form method="post" action="/event/{{ e['id'] }}/hide">
           <button type="submit">hide</button></form>
         <form method="post" action="/event/{{ e['id'] }}/flag">
@@ -395,6 +404,54 @@
     });
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
   })();
+
+  // Confirm in place so the page stays at the exact scroll position. The form's
+  // normal POST remains available as a fallback when the request cannot run.
+  document.querySelectorAll('.confirm-form').forEach(function (form) {
+    form.addEventListener('submit', async function (event) {
+      event.preventDefault();
+      var button = form.querySelector('button'), response;
+      button.disabled = true;
+      try {
+        response = await fetch(form.action, {
+          method: 'POST',
+          headers: {'X-Requested-With': 'fetch'}
+        });
+      } catch (error) {
+        button.disabled = false;
+        form.submit();
+        return;
+      }
+      if (!response.ok) {
+        button.disabled = false;
+        form.submit();
+        return;
+      }
+
+      var data;
+      try {
+        data = await response.json();
+      } catch (error) {
+        window.location.reload();
+        return;
+      }
+
+      var card = form.closest('.ev'),
+          meta = card.querySelector('.meta'),
+          badge = card.querySelector('.confirmed-badge');
+      if (data.confirmed && !badge) {
+        badge = document.createElement('span');
+        badge.className = 'badge confirmed-badge';
+        meta.appendChild(badge);
+      }
+      if (badge) {
+        if (data.confirmed) badge.textContent = '✓ confirmed';
+        else badge.remove();
+      }
+      button.textContent = data.confirmed ? 'unconfirm' : 'confirm';
+      button.disabled = false;
+    });
+  });
 
   // Pills apply on click -- no separate Filter press for the toggles.
   document.querySelectorAll('.chip input').forEach(function (el) {

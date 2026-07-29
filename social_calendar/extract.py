@@ -28,9 +28,12 @@ from .paths import MEDIA_DIR
 RUNGS = {1: "gpt-5.4-mini", 2: "gpt-5.4", 3: "gpt-5.5"}
 DEFAULT_RUNG = 1
 
-# Per-stage override. None means "whatever rung the extractor is on", which is
-# the safe default: a cheaper gate is a measured decision, not a free win.
-GATE_MODEL: str | None = None
+# Per-stage override. The gate is a text-only binary call over a caption, and
+# `eval_replay --stage gate` put nano at 39/40 against Haiku on 40 real posts --
+# the same single disagreement mini makes, and level with nano's own 39/40
+# self-agreement. It matches the outgoing model as closely as it matches itself,
+# at a sixth of mini's gate cost, so this is measured rather than assumed.
+GATE_MODEL: str | None = "gpt-5.4-nano"
 
 
 def sniff_media_type(data: bytes) -> str:

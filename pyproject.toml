@@ -39,7 +39,7 @@ include = ["social_calendar*"]
 # must travel with the package -- an install without them serves 500s on every
 # page, and py2app needs them declared here to bundle them at all.
 [tool.setuptools.package-data]
-social_calendar = ["templates/*.html"]
+social_calendar = ["templates/*.html", "static/*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

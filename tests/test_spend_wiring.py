@@ -53,20 +53,26 @@ def _post():
 
 # --- the extractor ----------------------------------------------------------
 
-def test_a_successful_call_meters_its_usage():
+def test_each_stage_bills_the_model_it_actually_used():
+    """The gate runs a rung below extract, so metering has to follow the stage
+    rather than the extractor -- charging gate calls at the extract model's rate
+    would overstate the cheap half of the bill by roughly 4x."""
     ex = Extractor(client=FakeOpenAI(), rung=1)
     ex.gate(_post())
-    (event,) = ex.meter.drain()
-    # 1000 in @ $0.75/MTok + 100 out @ $4.50/MTok
-    assert round(event["usd"], 8) == round((1000 * 0.75 + 100 * 4.50) / 1_000_000, 8)
-    assert event["detail"] == "gpt-5.4-mini"
+    ex.extract(_post())
+    gate_event, extract_event = ex.meter.drain()
+    assert gate_event["detail"] == "gpt-5.4-nano"
+    assert extract_event["detail"] == "gpt-5.4-mini"
+    # 1000 in + 100 out, priced at each model's own published rate
+    assert round(gate_event["usd"], 8) == round((1000 * 0.20 + 100 * 1.25) / 1_000_000, 8)
+    assert round(extract_event["usd"], 8) == round((1000 * 0.75 + 100 * 4.50) / 1_000_000, 8)
 
 
 def test_a_cached_token_is_billed_once_at_the_cached_rate():
     """OpenAI reports input_tokens as the total, so the cached slice must be
     subtracted before pricing or it is charged twice."""
     ex = Extractor(client=FakeOpenAI(cached=400), rung=1)
-    ex.gate(_post())
+    ex.extract(_post())
     (event,) = ex.meter.drain()
     expected = (600 * 0.75 + 400 * 0.075 + 100 * 4.50) / 1_000_000
     assert round(event["usd"], 8) == round(expected, 8)
