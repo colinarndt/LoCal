@@ -48,6 +48,23 @@ FIELDS = {
 }
 
 
+def _same(field: str, a, b) -> bool:
+    """Whether two answers agree on one field.
+
+    Venues get containment rather than equality: "The Fillmore" and "The
+    Fillmore Charlotte" are one room, and scoring them apart measures how the
+    two models punctuate rather than whether either found the venue. Everything
+    else compares exactly.
+    """
+    norm = FIELDS[field]
+    x, y = norm(a), norm(b)
+    if x == y:
+        return True
+    if field == "venue_name" and x and y:
+        return x in y or y in x
+    return False
+
+
 def baseline_rows(conn: sqlite3.Connection, stage: str, limit: int) -> list[dict]:
     """Posts the old model has already answered, newest first, with the media
     the extract stage needs."""
@@ -80,8 +97,8 @@ def compare(stage: str, old: dict, new: dict) -> list[str]:
         return [] if a == b else ["is_event_candidate"]
 
     diffs = []
-    for field, norm in FIELDS.items():
-        if norm(old.get(field)) != norm(new.get(field)):
+    for field in FIELDS:
+        if not _same(field, old.get(field), new.get(field)):
             diffs.append(field)
         # Once the two disagree on whether this is an event at all, the
         # remaining fields are noise -- the old row's are unset by definition.
@@ -97,6 +114,9 @@ def main() -> int:
     ap.add_argument("--rung", type=int, default=extract.DEFAULT_RUNG)
     ap.add_argument("--model", help="override the rung, e.g. gpt-5.4-nano")
     ap.add_argument("--yes", action="store_true", help="spend the money")
+    ap.add_argument("--self", dest="self_check", action="store_true",
+                    help="run the model against itself twice, to measure how much "
+                         "of the disagreement below is just run-to-run variance")
     args = ap.parse_args()
 
     with db.read_session(paths.DB_PATH) as conn:
@@ -131,27 +151,33 @@ def main() -> int:
     agree, disagreements, errors = 0, [], []
     for i, row in enumerate(rows, 1):
         new = ex.run(row["post"], args.stage)
-        if "_error" in new:
-            errors.append((row["post_id"], new["_error"]))
+        # In self mode the comparison is this model against another run of
+        # itself, so `baseline` is a second call rather than the stored row.
+        baseline = ex.run(row["post"], args.stage) if args.self_check else row["old"]
+        if "_error" in new or "_error" in baseline:
+            errors.append((row["post_id"], new.get("_error") or baseline["_error"]))
         else:
-            diffs = compare(args.stage, row["old"], new)
+            diffs = compare(args.stage, baseline, new)
             if diffs:
-                disagreements.append((row["post_id"], diffs, row["old"], new))
+                disagreements.append((row["post_id"], diffs, baseline, new))
             else:
                 agree += 1
         print(f"\r  {i}/{len(rows)}", end="", flush=True)
 
     scored = len(rows) - len(errors)
-    print(f"\n\nagreed on {agree}/{scored}"
+    label = "self-agreed" if args.self_check else "agreed"
+    print(f"\n\n{label} on {agree}/{scored}"
           f"{f' ({100 * agree / scored:.0f}%)' if scored else ''}"
           f" | {len(errors)} errors")
     print(f"replay cost: ${sum(e['usd'] for e in ex.meter.events):.4f}")
 
+    left = f"{ex.model} run A" if args.self_check else BASELINE
+    right = f"{ex.model} run B" if args.self_check else ex.model
     for post_id, diffs, old, new in disagreements[:12]:
         print(f"\n  {post_id}  differs on {', '.join(diffs)}")
         for f in diffs:
-            print(f"    {BASELINE:>18}: {old.get(f)!r}")
-            print(f"    {ex.model:>18}: {new.get(f)!r}")
+            print(f"    {left:>22}: {old.get(f)!r}")
+            print(f"    {right:>22}: {new.get(f)!r}")
     if len(disagreements) > 12:
         print(f"\n  ...and {len(disagreements) - 12} more")
     for post_id, err in errors[:5]:

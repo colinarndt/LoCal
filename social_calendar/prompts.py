@@ -8,7 +8,7 @@ Bump the relevant constant whenever that stage's prompt changes.
 """
 
 GATE_PROMPT_VERSION = "gate-v2"      # v2: sold-out / tense handling
-EXTRACT_PROMPT_VERSION = "extract-v1"
+EXTRACT_PROMPT_VERSION = "extract-v2"   # v2: explicit category rule
 
 def version_for(stage: str) -> str:
     return GATE_PROMPT_VERSION if stage == "gate" else EXTRACT_PROMPT_VERSION
@@ -95,10 +95,20 @@ correct answer when no time is shown; an invented one is a wrong answer that \
 looks right. Do not infer a venue from vibes — only report one that is stated \
 or is unambiguously the posting account's own room.
 
-3. CONFIDENCE. Report your own confidence from 0 to 1. Be honest: a blurry \
+3. CATEGORY. Choose the closest category, not the safest one. There is no \
+theatre option, so staged work goes to whichever fits better: a musical or a \
+concert is music, a comedy play or a stand-up night is comedy. Live performance \
+of any kind — band, DJ, singer-songwriter, open mic — is music. A flyer naming \
+an artist and a stage is music even when the caption never uses the word. \
+Reserve "other" for events that genuinely resemble none of the listed kinds; it \
+is the one answer nobody can filter by, so reaching for it when a category \
+merely fits imperfectly makes the event harder to find than getting it slightly \
+wrong would.
+
+4. CONFIDENCE. Report your own confidence from 0 to 1. Be honest: a blurry \
 flyer with a partial date deserves a low number.
 
-4. REASONING. In date_reasoning, state in one or two sentences exactly how you \
+5. REASONING. In date_reasoning, state in one or two sentences exactly how you \
 arrived at starts_at — quote the text you read off the flyer and show the \
 resolution. This is read by a human when the extraction is wrong.
 
