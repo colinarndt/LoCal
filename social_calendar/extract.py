@@ -7,9 +7,9 @@ request and everything else describes what to put in it.
 
 `gpt-5.4-mini` replaced `claude-haiku-4-5` for cost: $0.75/$4.50 per million
 tokens against Haiku's $1.00/$5.00. The gate is a text-only classification and
-runs fine a rung lower on `gpt-5.4-nano` ($0.20/$1.25) -- set GATE_MODEL to move
-it, but re-run the replay eval first, the same way SPEC section 3 qualified
-rung 1 in the first place.
+runs a rung lower on `gpt-5.4-nano` ($0.20/$1.25), which the replay eval scored
+level with Haiku on 40 real posts. Move it with GATE_MODEL, but re-run that eval
+first, the same way SPEC section 3 qualified rung 1 in the first place.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ DEFAULT_RUNG = 1
 # `eval_replay --stage gate` put nano at 39/40 against Haiku on 40 real posts --
 # the same single disagreement mini makes, and level with nano's own 39/40
 # self-agreement. It matches the outgoing model as closely as it matches itself,
-# at a sixth of mini's gate cost, so this is measured rather than assumed.
+# at a bit over a quarter of mini's gate cost, so this is measured rather than assumed.
 GATE_MODEL: str | None = "gpt-5.4-nano"
 
 

@@ -89,23 +89,29 @@ a day, and you can open the calendar whenever you want.
 
 ## What it costs
 
-Two APIs charge per use. Fetching posts is the cheap half, about **$0.07 per
-account per month**. Reading them costs more, because that is a model call per
-candidate post.
+Two APIs charge per use: Apify to fetch the posts, OpenAI to read them. Both
+bill per post, so the bill follows how many accounts you watch and not anything
+you do in the app.
 
-Measured against 8 real venue accounts, which post about once a day each:
-
-| Setup | Roughly per month |
+| Accounts you follow | Roughly per month |
 |---|---|
-| 25 accounts, out of the box | **$5** |
-| 50 accounts, best model reading the flyers | **$32** |
+| 10 | **$1.30** |
+| 25 | **$3.25** |
+| 50 | **$6.50** |
 
-Both numbers come from [SPEC.md §8](SPEC.md). Cost tracks how many posts you
-fetch, so it scales more or less with account count: call it $0.20 per account
-per month, and 10 accounts lands near $2.
+About **13¢ per account per month** — roughly 6¢ of model calls and 7¢ of
+scraping. Follow ten busy accounts and you will pay more than for ten quiet
+ones; the number that matters is posts, not handles.
 
-Adding accounts is close to free. The real limit is how many you can be bothered
-to curate.
+The model half is measured rather than estimated: both stages were replayed over
+real posts from a working database and priced from the token counts the API
+returned. Reading the flyer is the expensive call and runs on `gpt-5.4-mini`; the
+caption filter in front of it is a yes/no question that `gpt-5.4-nano` answers
+for about a quarter as much. How often venues post — a little over once a day each,
+across 8 real accounts — comes from [SPEC.md §8](SPEC.md).
+
+Adding a few more accounts costs pennies. The real limit is how many you can be
+bothered to curate.
 
 ### You can always see what you have spent
 
