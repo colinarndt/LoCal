@@ -1,38 +1,125 @@
-# instagram-calendar
+<div align="center">
 
-Many local events are announced on Instagram and nowhere else. This pulls those
-announcements out - captions *and* flyer images - turns them into structured
-events, deduplicates them, and gives you a filterable calendar plus an ICS feed
-you can subscribe to on your phone.
+<img src="docs/icon.png" width="128" alt="Instagram Calendar">
 
-It runs entirely on your own machine against a SQLite file. There is no hosted
-service and no account.
+# Instagram Calendar
 
-## What it actually does
+**The best things happening in your city get announced on Instagram and nowhere else.**
 
-1. Polls a set of Instagram accounts you approve (via [Apify](https://apify.com)).
-2. **Gate:** a cheap text-only pass over each caption decides "is this announcing
-   a dated, attendable event?" This is the main noise filter.
-3. **Extract:** survivors go to a vision call that reads the flyer image, because
-   the date, time, and lineup are usually *only* in the image.
-4. Deduplicates across accounts (venue + promoter + collab repost all announce the
-   same show), geocodes venues, expands recurring events.
-5. Serves a web UI — list or month grid, filters, confirm/hide/flag — and
-   `/calendar.ics`.
+No listing site has them. No newsletter covers them. A venue posts a flyer to its
+story, 400 people see it, and you find out on Monday that you missed it.
 
-## Cost
+This app reads those posts for you and puts the events on a calendar.
 
-**`run-once` spends real money.** Two paid APIs: Apify per scraped post, Anthropic
-per model call.
+### [⬇︎ Download for Mac](https://github.com/colinarndt/instagram-calendar/releases/latest)
 
-Measured against 8 real venue accounts: venues post ~1.1×/day. **50 accounts would be ~$10/month** on the default all-Haiku
-configuration, ~$32/month if you do image extraction with Opus. Scraping is
-~$0.07/account/month, so adding accounts is nearly free — the practical ceiling is
-how many you can curate. Full breakdown in [SPEC.md §8](SPEC.md).
+<sub>Apple Silicon · no account, no signup · your data stays on your Mac</sub>
 
-Start with a handful of accounts and `--limit` while you're calibrating.
+</div>
 
-## Setup
+<br>
+
+<img src="docs/calendar.png" alt="A month grid of local events, with filters for category, neighborhood, venue and distance">
+
+<br>
+
+## How it works
+
+You pick the accounts worth watching: venues, promoters, the record store that
+books shows in its back room. Once a day the app checks what they posted.
+
+Most posts are not events. A photo dump from Saturday, a staff shoutout, a meme.
+A cheap first pass reads each caption and throws those out. What survives goes to
+a model that **reads the flyer image**, which is where the date, the set times and
+the lineup usually live. Captions rarely repeat what the poster already put in
+the picture.
+
+Then it cleans up after itself. The venue, the promoter and three collab reposts
+all announced the same show, so it collapses them into one event. It looks up
+where the venue actually is and drops anything in the wrong city. It works out
+which nights "every Thursday" covers.
+
+What you get is a calendar you can filter by category, neighborhood, venue or
+distance, plus an `.ics` feed you can subscribe to in your phone's calendar app.
+
+## Install
+
+**1. [Download the `.dmg`](https://github.com/colinarndt/instagram-calendar/releases/latest)** and drag the app to Applications.
+
+**2. Open it. macOS will refuse the first time.**
+
+You will get a dialog saying the app cannot be verified. This is expected. The
+app is signed, but Apple charges $99/year to have that signature blessed, and
+this is a free tool with no company behind it.
+
+To get past it, go to **System Settings → Privacy & Security**, scroll down, and
+click the button offering to open it anyway. That is the whole fix, and you only
+do it once. (On macOS 15 and later, right-click → Open no longer works. Apple
+moved it.)
+
+Prefer one line in a terminal?
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Instagram Calendar.app"
+```
+
+**3. Paste in two API keys** when it asks. It needs
+[Anthropic](https://platform.claude.com/settings/keys) to read the flyers and
+[Apify](https://console.apify.com/settings/integrations) to fetch the posts. Both
+take about a minute to sign up for.
+
+**4. Pick some accounts.** Click **accounts** in the top right, then paste in
+profile URLs or approve the suggestions. Nothing gets fetched until you say so.
+
+That's it. A small calendar icon sits in your menu bar, the app runs itself once
+a day, and you can open the calendar whenever you want.
+
+## What it costs
+
+This part is not free, and pretending otherwise would waste your money.
+
+Two APIs charge per use. Fetching posts costs about **$0.07 per account per
+month**. Reading them costs more, because that is a model call per candidate post.
+
+Measured against 8 real venue accounts, which post about once a day each:
+
+| Accounts you follow | Roughly per month |
+|---|---|
+| 10 | $2 |
+| 50 | $10 |
+| 50, using the expensive model for flyers | $32 |
+
+Adding accounts is close to free. The real limit is how many you can be bothered
+to curate.
+
+Start with a handful while you get a feel for it. The menu bar shows what you
+have spent, counted from your actual usage rather than estimated.
+
+## Living with it
+
+**It updates itself.** The app asks how long it has been since anything was
+checked, and runs when that passes 24 hours. Shut your laptop at 3am and it
+catches up when you open it, which is the part cron gets wrong.
+
+**Subscribe on your phone.** The `.ics` feed respects whatever filters you have
+set, so you can subscribe to just music in one neighborhood and still browse
+everything on your Mac.
+
+**Impatient?** Every account has a **fetch it now** button that polls just that
+one, and there is a refresh-all for the whole rotation. Both tell you the cost
+before they spend anything.
+
+**Confirm, hide, flag.** Every event has three buttons. The model is good, not
+perfect, and you are the last word on what stays.
+
+<br>
+
+---
+
+<details>
+<summary><b>Running it without the Mac app</b> (Linux, a server, or from a checkout)</summary>
+
+<br>
 
 Requires Python 3.11+.
 
@@ -45,241 +132,157 @@ pip install -e .
 social-calendar init
 ```
 
-Everything the app writes — database, flyers, avatars, settings, keys — lives in
-`~/Library/Application Support/instagram-calendar` (`$XDG_DATA_HOME` on Linux,
-`%APPDATA%` on Windows), not in the checkout. Set `SOCIAL_CALENDAR_HOME` to move
-it. Upgrading from a version that kept `data/` beside the code:
-
-```bash
-social-calendar migrate      # copies; originals are left alone
-```
-
-`init` asks for:
-
-- **your city** — geocoded once, and named in the extraction prompts so the model
-  knows whose venues and which local date conventions it's reading
-- **a radius in miles** — a venue that geocodes outside it is treated as a
-  wrong-metro match and dropped (Nominatim will cheerfully resolve a Charlotte
-  query to Port Charlotte, Florida)
-- **your timezone** — IANA name, written into the ICS feed as `TZID`
-- **your two API keys** — [Anthropic](https://platform.claude.com/settings/keys)
-  and [Apify](https://console.apify.com/settings/integrations)
-- **what you're into** — optional; asks the model for starter accounts and drops
-  them in the review queue
-
-Non-secret settings land in `config.json` and are editable at `/settings`. Keys
-land in `.env` (mode 600) and are **only** settable from the CLI — see
-[Security](#security).
-
-## Running it
-
-On a Mac, as an app: grab the `.dmg` from
-[Releases](https://github.com/colinarndt/instagram-calendar/releases) — or build
-it yourself with `./make_dmg.sh`, see [Building the .app](#building-the-app) —
-then drag **Instagram Calendar** to Applications. No Python, no checkout: the
-runtime is inside the bundle. Apple Silicon only; the build is arm64.
-
-The app is signed, but not *notarized* — that needs a paid Apple Developer
-account. So macOS blocks the first launch. Once, to get past it: open it, dismiss
-the dialog, then **System Settings → Privacy & Security**, where a button offers
-to open it anyway. On macOS 15 and later that is the route; right-click → Open no
-longer clears it. Every launch after that is an ordinary double-click. If you
-would rather do it in one line:
-
-```bash
-xattr -dr com.apple.quarantine "/Applications/Instagram Calendar.app"
-```
-
-Running from a checkout instead:
-
-```bash
-pip install -e ".[app]"
-python -m social_calendar.app
-```
-
-A calendar icon appears in the menu bar, and the calendar
-opens in its own window — the server runs inside the app, so no browser is
-involved. Closing the window leaves it running in the menu bar. It also **runs
-the daily poll itself**, which is the thing that replaces cron; see
-[Keeping it up to date](#keeping-it-up-to-date).
-
-On first launch it asks for your API keys in a native window, and the menu has:
-
-- **API Keys…** — set or correct them later. Leave a field blank to keep the key
-  that is already there.
-- **Show in Dock** — off by default, which is why Cmd-Tab can't reach it. Turning
-  it on adds a Dock tile and an app-switcher entry immediately. The same
-  checkbox is on `/settings`; the running app picks that up within 30 seconds.
-
-Or headless, which is still how it runs on Linux or a server:
-
-```bash
-social-calendar-web          # http://localhost:8730
-```
-
-Open `/discover` and approve some accounts — nothing is polled until you do. Add
-handles by hand there too; pasting a profile URL works.
+`init` asks for your city, a radius in miles, your timezone, your two API keys,
+and optionally what you are into (it will suggest starter accounts). The city
+goes into the extraction prompts so the model knows whose venues it is reading.
+The radius drops venues that geocode to the wrong metro, because Nominatim will
+resolve a Charlotte query to Port Charlotte, Florida without blinking.
 
 Then:
 
 ```bash
+social-calendar-web        # http://localhost:8730
 social-calendar run-once   # scrape + extract. COSTS MONEY.
 social-calendar geocode    # fill in venue coordinates
 social-calendar stats      # what's in the database, and what it has cost
 ```
 
-## What it has actually cost
+Approve accounts at `/discover` first. Nothing is polled until you do.
 
-Every paid call is recorded as it happens — model calls priced from the token
-counts on the response, Apify runs from the actual dollars the finished run
-reports. `social-calendar stats` prints the totals; the menu bar shows them when
-you open it; `/spend.json` returns the same numbers.
-
-Two things worth knowing about those figures:
-
-- **Neither provider will tell you your balance.** There is no Anthropic endpoint
-  for account spend or remaining credit that a normal API key can reach, so this
-  is counted locally rather than fetched. Token counts are exact, so the only
-  thing that can drift is the published price table in `spend.py`.
-- **Totals start when tracking started, not at install.** The ledger postdates
-  the rest of the app, and the extraction history it would have to be rebuilt
-  from never recorded token counts. The UI says "since <date>" rather than
-  quietly presenting a smaller number as an all-time total.
-
-## Keeping it up to date
-
-`run-once` is the whole refresh. Either the Mac app runs it for you, or you
-schedule it.
-
-It's **incremental and self-healing**: every account records `last_polled_at`, and
-a run fetches only what's newer than that plus a two-day overlap. A missed run
-isn't a gap to repair; the next one widens its own window. Geocoding new venues,
-dedupe, and avatars all happen in the same pass and only touch new rows.
-
-Venues post about once a day, so **daily is the right cadence** — more often
-spends money to find nothing.
-
-**The Mac app schedules itself.** It doesn't fire on a clock — it asks how long
-it has been since anything was actually polled, and runs when that passes 24
-hours. A laptop asleep at 3am gets its run shortly after you open it, which is
-the case cron gets wrong: cron skips the run and never catches up. If you use the
-app, don't also install a cron entry; they'd race for the same accounts.
-
-Otherwise, schedule it yourself:
+To schedule it yourself:
 
 ```cron
 0 7 * * * /path/to/.venv/bin/social-calendar run-once --yes >> /tmp/run.log 2>&1
 ```
 
-**`--yes` is required.** Scheduled runs have no terminal to answer the
-confirmation prompt, and `run-once` refuses rather than hanging. It spends money,
-so saying so moves into the crontab.
+`--yes` is required. A scheduled run has no terminal to answer the confirmation
+prompt, so `run-once` refuses rather than hanging. It spends money, so saying so
+moves into the crontab. On a laptop prefer `launchd` over cron, for the same
+lid-shut reason the app's own scheduler exists. If you use the Mac app, skip this
+entirely: two schedulers would race for the same accounts.
 
-No `cd` is needed — `pip install -e .` puts `social-calendar` on the path and the
-data directory no longer depends on the working directory. On a **laptop** prefer
-`launchd` over cron, for the same lid-shut reason the app's own scheduler exists.
+Runs are incremental. Each account records when it was last polled, and a run
+fetches what is newer than that plus a two-day overlap. A missed run is not a gap
+you have to repair.
 
-### Adding an account without waiting
+Everything the app writes lives in
+`~/Library/Application Support/instagram-calendar` (`$XDG_DATA_HOME` on Linux,
+`%APPDATA%` on Windows). Set `SOCIAL_CALENDAR_HOME` to move it. Coming from a
+version that kept `data/` beside the code, run `social-calendar migrate`, which
+copies and leaves the originals alone.
 
-Approving an account in `/discover` puts it in the rotation, but nothing appears
-until the next scheduled run. The **fetch now** button (↻) polls that one account
-immediately so you can see it work — it runs in the background, reports progress
-on the page, and shows the cost before you confirm. One at a time.
+</details>
 
-### Views
+<details>
+<summary><b>Building the app yourself</b></summary>
 
-- **List** — chronological, grouped by day. The default.
-- **Calendar** — month grid at `?view=calendar`. On a phone the cells show event
-  counts and the day list underneath does the reading.
-- **`/calendar.ics`** — the same filters apply, so you can subscribe to just
-  `?category=music&hood=NoDa` and still browse everything in the UI.
-
-The server binds `0.0.0.0` so you can reach it from your phone over Tailscale or
-your LAN.
-
-## Building the .app
+<br>
 
 ```bash
 pip install pyinstaller
-./make_dmg.sh                 # -> dist/Instagram Calendar.dmg (~26MB)
+./make_dmg.sh              # -> dist/Instagram Calendar.dmg (~27MB)
 ```
 
 That draws the icon, builds the bundle, and wraps it in the drag-to-Applications
-image. To build the `.app` alone, or to re-wrap one you already built:
+image. To do the steps separately:
 
 ```bash
-python make_icon.py                              # -> AppIcon.icns
-pyinstaller --noconfirm InstagramCalendar.spec    # -> dist/Instagram Calendar.app
-./make_dmg.sh --no-build                         # wrap the existing .app
+python make_icon.py                             # -> AppIcon.icns
+pyinstaller --noconfirm InstagramCalendar.spec  # -> dist/Instagram Calendar.app
+./make_dmg.sh --no-build                        # wrap an existing .app
 ```
 
-`make_icon.py` *draws* the icon — a calendar page with a camera lens punched
-through it — with CoreGraphics and compiles the `.icns`, rather than checking in
-a binary nobody can edit. pyobjc is already a dependency, every size is rendered
-from the same geometry at its native pixel count instead of being downsampled
-from one master, and changing the artwork means editing constants at the top of
-the file.
+`make_icon.py` draws the icon with CoreGraphics and compiles the `.icns` rather
+than checking in a binary nobody can edit. pyobjc is already a dependency, every
+size renders from the same geometry at its native pixel count instead of getting
+downsampled from one master, and changing the artwork means editing constants at
+the top of the file.
 
-The app is about 44MB, and self-contained: it carries its own Python and every
-dependency, so it runs with the repo and the virtualenv deleted. It stays that
-size because the ~200MB of cached flyers lives in Application Support rather than
-inside the bundle — if a build comes out around 250MB, that separation has broken.
+The app is about 44MB and carries its own Python, so it runs with the repo and
+the virtualenv deleted. It stays that size because the cached flyers (200MB and
+growing) live in Application Support rather than inside the bundle. A build that
+comes out near 250MB means that separation broke.
 
-The build is **ad-hoc signed**, not notarized. The signature is intact in the
-image — `codesign --verify --deep --strict` passes on the mounted app, which is
-what separates "Gatekeeper wants approval" from the "app is damaged" dead end —
-but `spctl` rejects it on policy, so a recipient has to approve it by hand once.
-See [Running it](#running-it). Removing that step needs a $99/yr Apple Developer
-account, a Developer ID signature, and notarization; nothing in the code has to
-change for it.
-
-Worth re-running after any change to how the image is staged, since copying a
-signed bundle is the step that breaks signatures:
+The build is ad-hoc signed, not notarized. The signature survives inside the
+image, which is what separates "Gatekeeper wants a click" from the "app is
+damaged" dead end. Worth re-checking after any change to how the image gets
+staged, since copying a signed bundle is what breaks signatures:
 
 ```bash
 codesign --verify --deep --strict --verbose=2 "/Volumes/Instagram Calendar/Instagram Calendar.app"
 ```
 
-`hdiutil` builds the image because it ships with macOS. `create-dmg` is the
-usual pick and its extra value — background art, positioned icons — is a
+`hdiutil` builds the image because it ships with macOS. `create-dmg` is the usual
+pick, and the extra it gives you (background art, positioned icons) is a
 `.DS_Store` baked by driving Finder over AppleScript, which needs a logged-in
-session and fails under ssh or CI.
+session and fails under ssh. `py2app` is the obvious choice for a Mac bundle and
+does not work here: its latest release reads `[project].dependencies` out of
+`pyproject.toml` as `install_requires`, then rejects it.
 
-(`py2app` is the more obvious choice for a Mac bundle and does not work here: its
-latest release reads `[project].dependencies` out of `pyproject.toml` as
-`install_requires` and then rejects it.)
+</details>
 
-## Security
+<details>
+<summary><b>Security, and where your data lives</b></summary>
 
-There is **no authentication**, by design — it's a single-user app on your own
-network. Two consequences worth being explicit about:
+<br>
 
-- **Don't expose it to the public internet.** Tailscale or LAN only.
-- **API keys are not editable from the web UI**, and `/settings` reports only
-  whether a key is present, never its value. A key field on a no-auth
-  `0.0.0.0` service would be a key field for everyone on the network. Set keys
-  with `social-calendar init` or by editing
-  `~/Library/Application Support/instagram-calendar/.env` (mode 600).
+There is no login, by design. This is a single-user app on your own machine. Two
+things follow from that:
 
-The Mac app asks for them in a **native window** instead — **API Keys…** in its
-menu, and automatically on first launch when either key is missing. That is not a
-loophole in the rule above: the objection to a key field on `/settings` is that
-Flask is listening on `0.0.0.0` with no login, and a Cocoa window is not reachable
-over the network at all. It writes the same mode-600 file `init` does.
+**Do not expose it to the public internet.** The server binds `0.0.0.0` so you
+can reach it from your phone over Tailscale or your LAN. That is as far as it
+should go.
 
-## What's not in this repo
+**API keys cannot be set from the web UI.** `/settings` will tell you whether a
+key is present, never what it is. A key field on a no-auth service listening on
+`0.0.0.0` would be a key field for everyone on the network. Set keys with
+`social-calendar init`, or by editing the mode-600 `.env` in Application Support.
 
-The SQLite database, cached flyers, and profile pictures — now in Application
-Support rather than `data/`, and `spike/posts/` either way. That's scraped
-third-party content: fine to cache locally for personal use, not something to
-redistribute. Both are gitignored, and `social-calendar import-spike` (which
-replays the author's Phase 0 corpus) won't work from a clone.
+The Mac app asks for keys in a native window instead, which is not a loophole in
+that rule: the objection is that Flask is listening on the network with no login,
+and a Cocoa window is not reachable over the network at all. It writes the same
+mode-600 file.
 
-## Design notes
+Nothing leaves your machine except the API calls that fetch and read posts. There
+is no server, no telemetry and no account.
 
-[SPEC.md](SPEC.md) is the real document — schema, the dedupe strategy, the
+</details>
+
+<details>
+<summary><b>What's not in this repo</b></summary>
+
+<br>
+
+The database, the cached flyers and the profile pictures. That is scraped
+third-party content: fine to keep on your own disk for personal use, not
+something to redistribute. Both are gitignored, and `social-calendar import-spike`
+(which replays the author's early test corpus) will not work from a clone.
+
+The screenshot above shows the month grid for the same reason. The list view
+renders flyer images pulled from other people's accounts, and those do not belong
+in a public README.
+
+</details>
+
+<details>
+<summary><b>Design notes</b></summary>
+
+<br>
+
+[SPEC.md](SPEC.md) is the real document: schema, the dedupe strategy, the model
 escalation ladder, measured extraction accuracy, and the reasoning behind the
-things that look arbitrary. Read §3 before changing prompts.
+things that look arbitrary. Read §3 before you change any prompts.
+
+Two things worth knowing about the spend figures. Neither provider will tell you
+your balance, since no Anthropic endpoint exposes account spend to a normal API
+key, so the app counts locally instead of fetching. And the totals start when
+spend tracking was added rather than at install, because the extraction history it
+would have to be rebuilt from never recorded token counts. The UI says "since
+&lt;date&gt;" rather than passing a smaller number off as an all-time total.
+
+</details>
+
+<br>
 
 ## License
 
