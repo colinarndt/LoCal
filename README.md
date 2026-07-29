@@ -73,10 +73,11 @@ land in `.env` (mode 600) and are **only** settable from the CLI — see
 
 ## Running it
 
-On a Mac, as an app: open the `.dmg` and drag **Instagram Calendar** to
-Applications. No Python, no checkout — the runtime is inside the bundle. Build
-the image yourself with `./make_dmg.sh` (see [Building the .app](#building-the-app));
-there is no published release to download yet.
+On a Mac, as an app: grab the `.dmg` from
+[Releases](https://github.com/colinarndt/instagram-calendar/releases) — or build
+it yourself with `./make_dmg.sh`, see [Building the .app](#building-the-app) —
+then drag **Instagram Calendar** to Applications. No Python, no checkout: the
+runtime is inside the bundle. Apple Silicon only; the build is arm64.
 
 The app is signed, but not *notarized* — that needs a paid Apple Developer
 account. So macOS blocks the first launch. Once, to get past it: open it, dismiss
