@@ -53,7 +53,7 @@ click the button offering to open it anyway. That is the whole fix, and you only
 do it once. (On macOS 15 and later, right-click → Open no longer works. Apple
 moved it.)
 
-Prefer one line in a terminal?
+Or run this in Terminal:
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Instagram Calendar.app"
@@ -82,7 +82,7 @@ Measured against 8 real venue accounts, which post about once a day each:
 
 | Setup | Roughly per month |
 |---|---|
-| 50 accounts, out of the box | **$10** |
+| 25 accounts, out of the box | **$5** |
 | 50 accounts, best model reading the flyers | **$32** |
 
 Both numbers come from [SPEC.md §8](SPEC.md). Cost tracks how many posts you
