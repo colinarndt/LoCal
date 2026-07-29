@@ -244,7 +244,7 @@
   {% endif %}
   <div class="row">
     <label class="chip"><input type="checkbox" name="confirmed" value="1"
-      {% if args.get('confirmed')=='1' %}checked{% endif %}> confirmed only</label>
+      {% if args.get('confirmed')=='1' %}checked{% endif %}> interested only</label>
     <label class="chip"><input type="checkbox" name="review" value="1"
       {% if args.get('review')=='1' %}checked{% endif %}> needs review</label>
     <button class="primary" type="submit">Filter</button>
@@ -281,14 +281,14 @@
         {% if e['occurrence_of'] %}<span class="badge">recurring</span>{% endif %}
         {% if e['source_count'] > 1 %}
           <span class="badge">{{ e['source_count'] }} posts</span>{% endif %}
-        {% if e['is_confirmed'] %}<span class="badge">✓ confirmed</span>{% endif %}
+        {% if e['is_confirmed'] %}<span class="badge">✓ interested</span>{% endif %}
       </div>
       {% if e['needs_review'] %}
         <div class="review-note">{{ e['review_reason'] or 'flagged' }}</div>
       {% endif %}
       <div class="actions">
         <form method="post" action="/event/{{ e['id'] }}/confirm">
-          <button type="submit">{{ 'unconfirm' if e['is_confirmed'] else 'confirm' }}</button></form>
+          <button type="submit">{{ 'not interested' if e['is_confirmed'] else 'interested' }}</button></form>
         <form method="post" action="/event/{{ e['id'] }}/hide">
           <button type="submit">hide</button></form>
         <form method="post" action="/event/{{ e['id'] }}/flag">

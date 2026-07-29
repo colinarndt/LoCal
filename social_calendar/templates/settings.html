@@ -18,7 +18,9 @@
   body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 -apple-system,
          BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
   .wrap { max-width:620px; margin:0 auto; padding:16px; }
-  h1 { font-size:1.35rem; margin:0 0 4px; letter-spacing:-0.01em; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           flex-wrap:wrap; gap:8px; }
+  h1 { font-size:1.35rem; margin:0; letter-spacing:-0.01em; }
   h2 { font-size:.78rem; text-transform:uppercase; letter-spacing:.08em;
        color:var(--muted); margin:26px 0 10px; }
   a { color:var(--accent); }
@@ -47,9 +49,8 @@
 <body>
 <div class="wrap">
 
-<h1>Settings</h1>
-<p class="hint" style="margin-top:0">Where you are and how far out you care.
-  <a href="/">back to events</a></p>
+<header><h1>Settings</h1><a href="/">← calendar</a></header>
+<p class="hint" style="margin-top:4px">Where you are and how far out you care.</p>
 
 {% if error %}<div class="msg err">{{ error }}</div>{% endif %}
 {% if saved %}<div class="msg ok">Saved.</div>{% endif %}

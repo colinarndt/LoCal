@@ -2,13 +2,11 @@
 
 <img src="docs/icon.png" width="128" alt="Instagram Calendar">
 
-# Instagram Calendar
+# InstaCalendar
 
-**Sometimes the best local events get announced on Instagram and nowhere else.**
+**Sometimes the best local events only get announced on Instagram.**
 
-A venue posts a flyer to its story, 400 people see it, and you find out on Monday that you missed it.
-
-This app reads those posts for you and puts the events on a calendar.
+InstaCalendar reads those posts for you and drops everything onto a nice clean event calendar.
 
 ### [⬇︎ Download for Mac](https://github.com/colinarndt/instagram-calendar/releases/latest)
 
@@ -18,7 +16,16 @@ This app reads those posts for you and puts the events on a calendar.
 
 <br>
 
-<img src="docs/calendar.png" alt="A month grid of local events, with filters for category, neighborhood, venue and distance">
+<img src="docs/list.png" alt="A list of upcoming events, each with its flyer, time, venue and neighborhood, filtered to one neighborhood">
+
+<details>
+<summary>Prefer a month grid? Same events, different view ↓</summary>
+
+<br>
+
+<img src="docs/calendar.png" alt="The same events as a month grid, with every day's listings in its cell">
+
+</details>
 
 <br>
 
@@ -92,8 +99,18 @@ per month, and 10 accounts lands near $2.
 Adding accounts is close to free. The real limit is how many you can be bothered
 to curate.
 
-Start with a handful while you get a feel for it. The menu bar shows what you
-have spent, counted from your actual usage rather than estimated.
+### You can always see what you have spent
+
+Nothing runs up a bill quietly. Open the menu bar icon and the running total is
+right there: the last 24 hours, and everything since you installed it.
+
+<img src="docs/menubar.png" width="330" alt="The menu bar dropdown showing last run, accounts watched, spend in the last 24 hours, and spend since install with a call count">
+
+Those figures come from your actual usage. Every model call is priced from the
+token counts on the response, and every fetch from the dollars the finished run
+reports, so this is counted rather than estimated.
+
+Start with a handful of accounts while you get a feel for it.
 
 ## Living with it
 
@@ -109,7 +126,7 @@ everything on your Mac.
 one, and there is a refresh-all for the whole rotation. Both tell you the cost
 before they spend anything.
 
-**Confirm, hide, flag.** Every event has three buttons. The model is good, not
+**Interested, hide, flag.** Every event has three buttons. The model is good, not
 perfect, and you are the last word on what stays.
 
 <br>
