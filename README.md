@@ -19,7 +19,7 @@ InstaCalendar reads those posts for you and drops everything onto a nice clean e
 <img src="docs/list.png" alt="A list of upcoming events, each with its flyer, time, venue and neighborhood, filtered to one neighborhood">
 
 <details>
-<summary>Prefer a month grid? Same events, different view ↓</summary>
+<summary>Prefer a month grid?</summary>
 
 <br>
 
@@ -28,6 +28,38 @@ InstaCalendar reads those posts for you and drops everything onto a nice clean e
 </details>
 
 <br>
+
+## Features
+
+**It reads the flyer.** The date, the set times and the lineup are usually in the
+image and nowhere in the caption. A vision model reads the picture, so those
+events land on your calendar instead of getting missed.
+
+**One show, one entry.** The venue posts it, the promoter posts it, and three
+accounts repost it. InstaCalendar works out they are the same night and collapses
+them into a single event.
+
+**Filters that match how you actually pick a night out.** By category, by
+neighborhood, by venue, or by how far you are willing to travel.
+
+**Subscribe from your phone.** The `.ics` feed carries whatever filters you set,
+so you can put just music in one neighborhood into your calendar app and still
+browse everything on your Mac.
+
+**Recurring nights, worked out for you.** "Every Thursday" becomes actual
+Thursdays on the grid.
+
+**It runs itself.** Once a day, from the menu bar. Close the window and it keeps
+going; shut the laptop and it catches up when you open it.
+
+**The bill is never a surprise.** The running total sits in the menu bar, counted
+from real usage. Anything that spends money tells you the cost first.
+
+**Nothing leaves your Mac.** A SQLite file in your own Application Support
+folder. No account, no server, no telemetry.
+
+**You get the last word.** Mark an event interested, hide it, or flag it. The
+model is good, not perfect.
 
 ## How it works
 
@@ -78,8 +110,6 @@ That's it. A small calendar icon sits in your menu bar, the app runs itself once
 a day, and you can open the calendar whenever you want.
 
 ## What it costs
-
-This part is not free, and pretending otherwise would waste your money.
 
 Two APIs charge per use. Fetching posts is the cheap half, about **$0.07 per
 account per month**. Reading them costs more, because that is a model call per
