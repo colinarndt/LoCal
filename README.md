@@ -31,7 +31,9 @@ InstaCalendar reads those posts for you and drops everything onto a nice clean e
 
 ## Features
 
-**Filterssss.** Filter by event type, neighborhood, venue, IG account, date, distance from you - or just see the ones you marked "I want to gooo"! 
+**Filterssss.** Drilldown by event type, neighborhood, venue, IG account, date, or distance.
+
+**Tag the best ones.** Then come back later to see just the ones you want to check out. 
 
 **Refreshes automatically.** Once a day. Close the app and it will still refresh in the background.
 
@@ -81,7 +83,7 @@ xattr -dr com.apple.quarantine "/Applications/Instagram Calendar.app"
 ```
 
 **3. Paste in two API keys** when it asks. It needs
-[Anthropic](https://platform.claude.com/settings/keys) to read the flyers and
+[OpenAI](https://platform.openai.com/api-keys) to read the flyers and
 [Apify](https://console.apify.com/settings/integrations) to fetch the posts. Both
 take about a minute to sign up for.
 
@@ -303,7 +305,7 @@ escalation ladder, measured extraction accuracy, and the reasoning behind the
 things that look arbitrary. Read §3 before you change any prompts.
 
 Two things worth knowing about the spend figures. Neither provider will tell you
-your balance, since no Anthropic endpoint exposes account spend to a normal API
+your balance, since neither provider exposes account spend to a normal API
 key, so the app counts locally instead of fetching. And the totals start when
 spend tracking was added rather than at install, because the extraction history it
 would have to be rebuilt from never recorded token counts. The UI says "since

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import avatars, db, discovery, geo, migrate, paths, pipeline, runner, spend
+from . import avatars, db, discovery, extract, geo, migrate, paths, pipeline, runner, spend
 from .config import API_KEYS, ENV_PATH, write_env
 from .sources import ApifySource, LocalSpikeSource, read_accounts
 
@@ -36,8 +36,8 @@ def _env() -> None:
 def _extractor(rung: int):
     from .extract import RUNGS, Extractor
 
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        sys.exit("ANTHROPIC_API_KEY not set.\n  Run `python -m social_calendar.cli init`, or set it in .env.")
+    if not os.getenv("OPENAI_API_KEY"):
+        sys.exit("OPENAI_API_KEY not set.\n  Run `python -m social_calendar.cli init`, or set it in .env.")
     if rung != 1:
         print(f"  !! rung {rung} ({RUNGS[rung]}) is an ESCALATION above the Phase 0 "
               f"production config. Only run with explicit approval.")
@@ -110,8 +110,8 @@ def cmd_init(args) -> None:
     print("\nNow: which Instagram accounts to watch. Nothing is polled until you "
           "approve it.")
     desc = _ask("Describe what you like (blank to skip)", "")
-    if desc and (values.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")):
-        os.environ.setdefault("ANTHROPIC_API_KEY", values.get("ANTHROPIC_API_KEY", ""))
+    if desc and (values.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")):
+        os.environ.setdefault("OPENAI_API_KEY", values.get("OPENAI_API_KEY", ""))
         ex = _extractor(1)
         cand = discovery.propose(ex, desc, [], city=city)
         with db.session(args.db) as conn:
@@ -227,13 +227,13 @@ def _replay(conn) -> int:
             conn.execute(
                 "INSERT INTO extraction (post_id, stage, prompt_version, model, raw_output, "
                 "is_error, created_at) VALUES (?,?,?,?,?,0,datetime('now'))",
-                (r["post_id"], "extract", "extract-v1", "claude-haiku-4-5", json.dumps(r)))
+                (r["post_id"], "extract", "extract-v1", extract.RUNGS[extract.DEFAULT_RUNG], json.dumps(r)))
             continue
 
         eid = conn.execute(
             "INSERT INTO extraction (post_id, stage, prompt_version, model, raw_output, "
             "is_error, created_at) VALUES (?,?,?,?,?,0,datetime('now'))",
-            (r["post_id"], "extract", "extract-v1", "claude-haiku-4-5", json.dumps(r))).lastrowid
+            (r["post_id"], "extract", "extract-v1", extract.RUNGS[extract.DEFAULT_RUNG], json.dumps(r))).lastrowid
         flagged, reason = v.validate({"starts_at": r["starts_at"], "posted_at": r["posted_at"],
                                       "date_reasoning": r["date_reasoning"]})
         conn.execute(

@@ -20,7 +20,7 @@ from social_calendar import web
 def _idle_job(monkeypatch):
     """Reset the module-level job slot, and satisfy the API-key precondition."""
     web.JOB.update(state="idle", handle=None, label="", message="", stats=None)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("APIFY_TOKEN", "test-token")
     # Never let a test reach the network or spend money.
     monkeypatch.setattr(web.threading, "Thread", _FakeThread)
@@ -46,7 +46,7 @@ def test_a_second_run_is_refused_while_one_is_running():
 
 
 def test_missing_keys_refuse_before_the_slot_is_claimed():
-    os.environ.pop("ANTHROPIC_API_KEY")
+    os.environ.pop("OPENAI_API_KEY")
     assert web.start_fetch(["a"], "x") == "no-keys"
     # The slot must be left free, or one misconfigured run wedges the app.
     assert web.JOB["state"] == "idle"

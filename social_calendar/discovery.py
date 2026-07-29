@@ -104,22 +104,14 @@ def propose(extractor, description: str, existing: list[str], city: str | None =
         f"Already following ({len(existing)}): {', '.join(sorted(existing)) or '(none)'}\n\n"
         f"Propose up to {limit} accounts."
     )
-    try:
-        resp = extractor.client.messages.create(
-            model=extractor.model,
-            max_tokens=2048,
-            system=PROPOSE_SYSTEM,
-            messages=[{"role": "user", "content": prompt}],
-            output_config={"format": {"type": "json_schema", "schema": PROPOSE_SCHEMA}},
-        )
-        # Metered before the refusal and parse checks below: every one of them
-        # returns [], and all of them still cost money.
-        extractor.meter.add_anthropic(extractor.model, getattr(resp, "usage", None))
-        if resp.stop_reason == "refusal":
-            return []
-        text = next((b.text for b in resp.content if b.type == "text"), None)
-        data = json.loads(text) if text else {}
-    except Exception:
+    # Same request shape as the gate and extract stages, so metering, refusal
+    # handling and JSON parsing stay in one place rather than being repeated
+    # here and drifting apart.
+    data = extractor._respond(
+        extractor.model, PROPOSE_SYSTEM,
+        [{"type": "input_text", "text": prompt}], PROPOSE_SCHEMA, "propose",
+    )
+    if "_error" in data:
         return []
 
     known = {h.lower() for h in existing}

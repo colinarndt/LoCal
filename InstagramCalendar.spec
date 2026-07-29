@@ -30,6 +30,10 @@ a = Analysis(
         "apify_client",
         # Flask's dev server; imported lazily by app.run().
         "werkzeug.serving",
+        # openai resolves its transport lazily, so nothing in the graph points
+        # at these and the frozen app 500s on the first model call without them.
+        "openai",
+        "httpx",
         # Selected at runtime by name, so no import edge exists to follow.
         "social_calendar.web",
         "social_calendar.cli",

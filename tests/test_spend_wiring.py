@@ -16,23 +16,33 @@ from social_calendar.extract import Extractor
 from social_calendar.sources import RawPost
 
 
-class FakeAnthropic:
-    """Returns a valid gate/extract response and reports token usage."""
+class FakeOpenAI:
+    """Returns a valid gate/extract response and reports token usage.
 
-    def __init__(self, stop_reason="end_turn", text='{"is_event_candidate": false}'):
-        self.stop_reason, self.text = stop_reason, text
+    Mirrors the Responses API shape the real client returns: `input_tokens` is
+    the total with the cached slice broken out beneath it, and a refusal is a
+    content part rather than a status.
+    """
+
+    def __init__(self, status="completed", text='{"is_event_candidate": false}',
+                 refusal=None, cached=0):
+        self.status, self.text, self.refusal, self.cached = status, text, refusal, cached
         self.calls = 0
-        self.messages = types.SimpleNamespace(create=self._create)
+        self.responses = types.SimpleNamespace(create=self._create)
 
     def _create(self, **kw):
         self.calls += 1
+        parts = ([types.SimpleNamespace(type="refusal", refusal=self.refusal)]
+                 if self.refusal else [types.SimpleNamespace(type="output_text")])
         return types.SimpleNamespace(
-            stop_reason=self.stop_reason,
-            stop_details="blocked" if self.stop_reason == "refusal" else None,
-            content=[types.SimpleNamespace(type="text", text=self.text)],
+            status=self.status,
+            incomplete_details=None,
+            output=[types.SimpleNamespace(content=parts)],
+            output_text="" if self.refusal else self.text,
             usage=types.SimpleNamespace(
                 input_tokens=1000, output_tokens=100,
-                cache_creation_input_tokens=0, cache_read_input_tokens=0),
+                input_tokens_details=types.SimpleNamespace(
+                    cached_tokens=self.cached, cache_write_tokens=0)),
         )
 
 
@@ -44,24 +54,35 @@ def _post():
 # --- the extractor ----------------------------------------------------------
 
 def test_a_successful_call_meters_its_usage():
-    ex = Extractor(client=FakeAnthropic(), rung=1)
+    ex = Extractor(client=FakeOpenAI(), rung=1)
     ex.gate(_post())
     (event,) = ex.meter.drain()
-    # 1000 in @ $1/MTok + 100 out @ $5/MTok
-    assert round(event["usd"], 8) == round((1000 * 1.00 + 100 * 5.00) / 1_000_000, 8)
-    assert event["detail"] == "claude-haiku-4-5"
+    # 1000 in @ $0.75/MTok + 100 out @ $4.50/MTok
+    assert round(event["usd"], 8) == round((1000 * 0.75 + 100 * 4.50) / 1_000_000, 8)
+    assert event["detail"] == "gpt-5.4-mini"
+
+
+def test_a_cached_token_is_billed_once_at_the_cached_rate():
+    """OpenAI reports input_tokens as the total, so the cached slice must be
+    subtracted before pricing or it is charged twice."""
+    ex = Extractor(client=FakeOpenAI(cached=400), rung=1)
+    ex.gate(_post())
+    (event,) = ex.meter.drain()
+    expected = (600 * 0.75 + 400 * 0.075 + 100 * 4.50) / 1_000_000
+    assert round(event["usd"], 8) == round(expected, 8)
+    assert event["input_tokens"] == 600 and event["cache_read_tokens"] == 400
 
 
 def test_a_refusal_is_still_billed():
     """HTTP 200, tokens consumed, no useful answer -- the easiest spend to lose."""
-    ex = Extractor(client=FakeAnthropic(stop_reason="refusal"), rung=1)
+    ex = Extractor(client=FakeOpenAI(refusal="blocked"), rung=1)
     out = ex.gate(_post())
     assert out["_error"] == "refusal"
     assert len(ex.meter.drain()) == 1
 
 
 def test_unparseable_output_is_still_billed():
-    ex = Extractor(client=FakeAnthropic(text="not json at all"), rung=1)
+    ex = Extractor(client=FakeOpenAI(text="not json at all"), rung=1)
     out = ex.gate(_post())
     assert "_error" in out
     assert len(ex.meter.drain()) == 1
@@ -71,7 +92,7 @@ def test_a_failed_request_bills_nothing():
     """No response object means the model never ran."""
     class Boom:
         def __init__(self):
-            self.messages = types.SimpleNamespace(create=self._raise)
+            self.responses = types.SimpleNamespace(create=self._raise)
 
         def _raise(self, **kw):
             raise RuntimeError("connection reset")
@@ -136,12 +157,12 @@ def test_process_records_every_model_call():
     source = FakeApifySource()
     pipeline.ingest(conn, source, ["venue"], limit=20, fetch_media=False)
 
-    client = FakeAnthropic()
+    client = FakeOpenAI()
     ex = Extractor(client=client, rung=1)
     pipeline.process(conn, ex)
 
     t = spend.totals(conn)
     assert client.calls == 1                       # gated out, so no extract call
-    assert t["by_provider"]["anthropic"] > 0
+    assert t["by_provider"]["openai"] > 0
     assert t["calls"] == 2                         # one apify run + one gate call
     assert ex.meter.events == []
