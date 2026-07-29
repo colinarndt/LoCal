@@ -232,7 +232,7 @@ class AppDelegate(NSObject):
             lines.append("No spend recorded yet")
             return lines
 
-        lines.append(f"Spend, last 24h: {_money(totals['last_24h'])}")
+        lines.append(f"Last 24h: {_money(totals['last_24h'])}")
         # Never labelled "all time": this ledger postdates the install, so spend
         # before it started cannot be reconstructed. Say when counting began
         # instead of showing a number that quietly understates the real total.

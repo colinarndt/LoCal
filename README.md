@@ -31,35 +31,17 @@ InstaCalendar reads those posts for you and drops everything onto a nice clean e
 
 ## Features
 
-**It reads the flyer.** The date, the set times and the lineup are usually in the
-image and nowhere in the caption. A vision model reads the picture, so those
-events land on your calendar instead of getting missed.
+**Filterssss.** Filter by event type, neighborhood, venue, IG account, date, distance from you - or just see the ones you marked "I want to gooo"! 
 
-**One show, one entry.** The venue posts it, the promoter posts it, and three
-accounts repost it. InstaCalendar works out they are the same night and collapses
-them into a single event.
+**Refreshes automatically.** Once a day. Close the app and it will still refresh in the background.
 
-**Filters that match how you actually pick a night out.** By category, by
-neighborhood, by venue, or by how far you are willing to travel.
+**Subscribe on your phone.** Create a perfect filter? Click "Subscribe to this calendar" to follow it on your phone.
 
-**Subscribe from your phone.** The `.ics` feed carries whatever filters you set,
-so you can put just music in one neighborhood into your calendar app and still
-browse everything on your Mac.
+**No data leaves your Mac.** Everything is stored on your computer. No account, no server, no telemetry.
 
-**Recurring nights, worked out for you.** "Every Thursday" becomes actual
-Thursdays on the grid.
+**You get the last word.** Mark an event interested, hide it, or flag it. AI is good these days but not... perfect.
 
-**It runs itself.** Once a day, from the menu bar. Close the window and it keeps
-going; shut the laptop and it catches up when you open it.
-
-**The bill is never a surprise.** The running total sits in the menu bar, counted
-from real usage. Anything that spends money tells you the cost first.
-
-**Nothing leaves your Mac.** A SQLite file in your own Application Support
-folder. No account, no server, no telemetry.
-
-**You get the last word.** Mark an event interested, hide it, or flag it. The
-model is good, not perfect.
+**Costs are never a surprise.** The running total sits in the menu bar, counted from real usage. Anything that spends money tells you the cost first.
 
 ## How it works
 
