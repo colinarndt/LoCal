@@ -165,16 +165,26 @@ class _EventCardHTML(HTMLParser):
         self._card_depth: int | None = None
         self._card: dict[str, str] | None = None
         self._captures: dict[str, tuple[str, int, list[str]]] = {}
+        self._category_labels: dict[str, str] = {}
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
         values = {k.lower(): (v or "") for k, v in attrs}
         classes = set(values.get("class", "").split())
 
+        if (tag == "span" and "event_filter_item" in classes
+                and values.get("data-category")):
+            name = f"filter:{values['data-category']}"
+            self._captures[name] = (tag, self._depth, [])
+
         if (tag == "div" and self._card is None
                 and {"eventItem", "entry"}.issubset(classes)):
             self._card_depth = self._depth
             self._card = {}
+            category_class = next((value for value in classes
+                                   if re.fullmatch(r"category_\d+", value)), None)
+            if category_class:
+                self._card["category_id"] = category_class.removeprefix("category_")
 
         if self._card is not None:
             if tag in {"h1", "h2", "h3", "h4", "h5", "h6"} and "title" in classes:
@@ -205,7 +215,9 @@ class _EventCardHTML(HTMLParser):
         for name, (capture_tag, capture_depth, parts) in list(self._captures.items()):
             if tag == capture_tag and self._depth == capture_depth:
                 value = " ".join("".join(parts).split())
-                if value and self._card is not None:
+                if value and name.startswith("filter:"):
+                    self._category_labels[name.removeprefix("filter:")] = value
+                elif value and self._card is not None:
                     self._card[name] = value
                 del self._captures[name]
 
@@ -223,6 +235,7 @@ class _EventCardHTML(HTMLParser):
         start, end = _card_dates(card.get("date") or card.get("date_text") or "")
         if not (title and permalink and start):
             return
+        source_category = self._category_labels.get(card.get("category_id", ""), "")
         self.events.append(StructuredEvent(
             external_id=permalink,
             title=title,
@@ -231,7 +244,7 @@ class _EventCardHTML(HTMLParser):
             ends_at=end,
             venue_name=card.get("venue"),
             permalink=permalink,
-            category=_category(title),
+            category=_category(f"{title} {source_category}"),
             raw={"parser": "carbonhouse-card", **card},
         ))
 
@@ -302,7 +315,11 @@ def _price(offers) -> str | None:
 
 def _category(text: str) -> str:
     lower = text.lower()
+    if re.search(r"\b(?:play|plays|drama)\b", lower):
+        return "theater"
     rules = {
+        "theater": ("theater", "theatre", "broadway", "musical", "stage play",
+                    "stage production", "dramatic production"),
         "music": ("concert", "music", "band", "dj", "singer", "tour"),
         "comedy": ("comedy", "comedian", "stand-up", "standup"),
         "food": ("dinner", "tasting", "brunch", "food", "beer", "wine"),

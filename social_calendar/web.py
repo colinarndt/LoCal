@@ -95,7 +95,7 @@ def clock(starts_at: str | None) -> str:
     return f"{hour}:{t.minute:02d}{suffix}" if t.minute else f"{hour}{suffix}"
 
 
-CATEGORIES = ["music", "comedy", "food", "market", "art", "opening", "other"]
+CATEGORIES = ["music", "theater", "comedy", "food", "market", "art", "opening", "other"]
 
 
 # --- month grid -----------------------------------------------------------

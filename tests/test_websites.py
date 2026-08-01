@@ -9,6 +9,10 @@ JSONLD = """<!doctype html><html><head>
 </head></html>"""
 
 CARBONHOUSE = """<!doctype html><html><body>
+<div class="category-dropdown">
+  <span class="event_filter_item" data-category="12">Broadway at Blumenthal</span>
+  <span class="event_filter_item" data-category="6">Concerts</span>
+</div>
 <div class="eventList event_list_grid event_list">
   <div class="eventList__wrapper list" id="list">
     <div class="eventItem entry category_12 clearfix">
@@ -126,8 +130,14 @@ def test_carbonhouse_event_cards_are_parsed_without_images_or_a_model_call():
     assert event.start_time_known is False
     assert event.venue_name == "Booth Playhouse"
     assert event.permalink == "https://www.blumenthalarts.org/events/detail/dracula"
-    assert event.category == "comedy"
+    assert event.category == "theater"
     assert events[1].starts_at == "2026-08-29"
+    assert events[1].category == "music"
+
+
+def test_website_category_recognizes_plays_and_schema_theater_events():
+    assert websites._category("A new play by Lorraine Hansberry") == "theater"
+    assert websites._category("TheaterEvent") == "theater"
 
 
 def test_carbonhouse_cross_year_date_range_is_parsed():

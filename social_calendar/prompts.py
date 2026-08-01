@@ -8,7 +8,7 @@ Bump the relevant constant whenever that stage's prompt changes.
 """
 
 GATE_PROMPT_VERSION = "gate-v3"      # v3: explicit hints for pre-vision dedupe
-EXTRACT_PROMPT_VERSION = "extract-v2"   # v2: explicit category rule
+EXTRACT_PROMPT_VERSION = "extract-v3"   # v3: first-class theater category
 
 def version_for(stage: str) -> str:
     return GATE_PROMPT_VERSION if stage == "gate" else EXTRACT_PROMPT_VERSION
@@ -109,11 +109,11 @@ correct answer when no time is shown; an invented one is a wrong answer that \
 looks right. Do not infer a venue from vibes — only report one that is stated \
 or is unambiguously the posting account's own room.
 
-3. CATEGORY. Choose the closest category, not the safest one. There is no \
-theatre option, so staged work goes to whichever fits better: a musical or a \
-concert is music, a comedy play or a stand-up night is comedy. Live performance \
-of any kind — band, DJ, singer-songwriter, open mic — is music. A flyer naming \
-an artist and a stage is music even when the caption never uses the word. \
+3. CATEGORY. Choose the closest category, not the safest one. Plays, musicals, \
+Broadway productions, and other staged dramatic work are theater, including \
+comedy plays. Stand-up and improv shows are comedy. Concerts and live music — \
+band, DJ, singer-songwriter, open mic — are music. A flyer naming a musical \
+artist and a stage is music even when the caption never uses the word. \
 Reserve "other" for events that genuinely resemble none of the listed kinds; it \
 is the one answer nobody can filter by, so reaching for it when a category \
 merely fits imperfectly makes the event harder to find than getting it slightly \
@@ -152,7 +152,8 @@ EXTRACT_SCHEMA = {
             "anyOf": [
                 {
                     "type": "string",
-                    "enum": ["music", "comedy", "food", "market", "art", "opening", "other"],
+                    "enum": ["music", "theater", "comedy", "food", "market",
+                             "art", "opening", "other"],
                 },
                 {"type": "null"},
             ]
