@@ -45,10 +45,10 @@ InstaCalendar reads those posts for you and drops everything onto a nice clean e
 You pick the Instagram accounts and website calendars worth watching. Once a day
 the app checks every source (as long as it's running in your menu bar).
 
-Website events published as iCalendar or schema.org structured data go straight
-into the calendar without an AI call. When a later Instagram caption clearly
-identifies one of those events, the post is attached as another source and its
-flyer does not need to be processed again.
+Website events published as iCalendar, schema.org structured data, or a supported
+server-rendered event listing go straight into the calendar without an AI call.
+When a later Instagram caption clearly identifies one of those events, the post
+is attached as another source and its flyer does not need to be processed again.
 
 Most posts are not events. A cheap first pass reads each caption and throws those out. 
 Actual event posts get passed to a model that **reads the flyer image**, where the date, 

@@ -7,6 +7,36 @@ JSONLD = """<!doctype html><html><head>
 <script type="application/ld+json">%s</script>
 </head></html>"""
 
+CARBONHOUSE = """<!doctype html><html><body>
+<div class="eventList event_list_grid event_list">
+  <div class="eventList__wrapper list" id="list">
+    <div class="eventItem entry category_12 clearfix">
+      <div class="thumb"><a href="/events/detail/dracula"><img src="poster.jpg"></a></div>
+      <div class="info clearfix">
+        <h3 class="h3 title title-withTagline">
+          <a href="/events/detail/dracula">Dracula: A Comedy of Terrors</a>
+        </h3>
+        <div class="event_meta">
+          <div class="date date-override" aria-label="August  1 to August 16 2026">
+            <span>Aug 1</span> - <span>16, 2026</span>
+          </div>
+          <div class="event_venue"><a href="/venues/booth">Booth Playhouse</a></div>
+        </div>
+      </div>
+    </div>
+    <div class="eventItem entry alt category_6 clearfix">
+      <div class="info clearfix">
+        <h3 class="h3 title"><a href="/events/detail/rick-ross">Rick Ross Tour</a></h3>
+        <div class="event_meta">
+          <div class="date date-override" aria-label="August 29 2026">Aug 29, 2026</div>
+          <div class="event_venue"><a href="/venues/belk">Belk Theater</a></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body></html>"""
+
 
 class Response:
     def __init__(self, body: str, url="https://venue.example/events",
@@ -79,6 +109,36 @@ END:VCALENDAR
     # August is daylight time in the configured America/New_York zone.
     assert events[0].starts_at == "2026-08-14T19:30:00"
     assert events[0].start_time_known is True
+
+
+def test_carbonhouse_event_cards_are_parsed_without_images_or_a_model_call():
+    events = websites.parse_event_cards(
+        CARBONHOUSE, "https://www.blumenthalarts.org/events")
+
+    assert len(events) == 2
+    event = events[0]
+    assert event.title == "Dracula: A Comedy of Terrors"
+    assert event.starts_at == "2026-08-01"
+    assert event.ends_at == "2026-08-16"
+    assert event.start_time_known is False
+    assert event.venue_name == "Booth Playhouse"
+    assert event.permalink == "https://www.blumenthalarts.org/events/detail/dracula"
+    assert event.category == "comedy"
+    assert events[1].starts_at == "2026-08-29"
+
+
+def test_carbonhouse_cross_year_date_range_is_parsed():
+    start, end = websites._card_dates("December 29 2026 to January 3 2027")
+    assert (start, end) == ("2026-12-29", "2027-01-03")
+
+
+def test_fetch_events_falls_back_to_supported_html_cards():
+    source = {"url": "https://www.blumenthalarts.org/events",
+              "etag": None, "last_modified": None}
+    events, kind, _, _ = websites.fetch_events(source, opener_for(CARBONHOUSE))
+
+    assert kind == "html-cards"
+    assert len(events) == 2
 
 
 def test_poll_inserts_and_then_updates_one_structured_event():

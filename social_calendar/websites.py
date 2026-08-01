@@ -1,9 +1,10 @@
 """Structured event ingestion from user-managed website calendars.
 
 The cheap path is deliberately first: iCalendar and schema.org Event JSON-LD
-already contain the fields the vision model would be asked to infer. A page
-without either is reported as unsupported rather than silently pushed through
-an expensive, unreliable arbitrary-page model call.
+already contain the fields the vision model would be asked to infer. Common
+server-rendered event cards are another cheap source when a venue's CMS omits
+those standards. Unsupported pages are reported rather than silently pushed
+through an expensive, unreliable arbitrary-page model call.
 """
 
 from __future__ import annotations
@@ -106,6 +107,137 @@ class _StructuredHTML(HTMLParser):
             self.scripts.append("".join(self._parts))
             self._in_jsonld = False
             self._parts = []
+
+
+_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4,
+    "may": 5, "june": 6, "july": 7, "august": 8,
+    "september": 9, "october": 10, "november": 11, "december": 12,
+}
+_MONTH_PATTERN = "|".join(_MONTHS)
+_CARD_DATE = re.compile(
+    rf"^({_MONTH_PATTERN})\s+(\d{{1,2}})(?:\s+(\d{{4}}))?"
+    rf"(?:\s+to\s+({_MONTH_PATTERN})\s+(\d{{1,2}})\s+(\d{{4}}))?$",
+    re.IGNORECASE,
+)
+
+
+def _card_dates(value: str) -> tuple[str | None, str | None]:
+    """Parse the accessible date labels used by Carbonhouse event listings."""
+    label = re.sub(r"[\s,]+", " ", html.unescape(value or "")).strip()
+    match = _CARD_DATE.fullmatch(label)
+    if not match:
+        return None, None
+    start_month, start_day, start_year, end_month, end_day, end_year = match.groups()
+    if end_month:
+        end_year_number = int(end_year)
+        start_year_number = int(start_year) if start_year else end_year_number
+        if not start_year and _MONTHS[start_month.lower()] > _MONTHS[end_month.lower()]:
+            start_year_number -= 1
+        end = dt.date(end_year_number, _MONTHS[end_month.lower()], int(end_day))
+    else:
+        if not start_year:
+            return None, None
+        start_year_number = int(start_year)
+        end = None
+    start = dt.date(start_year_number, _MONTHS[start_month.lower()], int(start_day))
+    return start.isoformat(), end.isoformat() if end else None
+
+
+class _EventCardHTML(HTMLParser):
+    """Extract Carbonhouse-style server-rendered event cards.
+
+    Carbonhouse is used by a number of performing-arts venues. Its listing
+    pages do not always publish schema.org data, but the visible cards use a
+    stable structure and an accessible, unambiguous date label.
+    """
+
+    _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+             "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self, base_url: str):
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.events: list[StructuredEvent] = []
+        self._depth = 0
+        self._card_depth: int | None = None
+        self._card: dict[str, str] | None = None
+        self._captures: dict[str, tuple[str, int, list[str]]] = {}
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        values = {k.lower(): (v or "") for k, v in attrs}
+        classes = set(values.get("class", "").split())
+
+        if (tag == "div" and self._card is None
+                and {"eventItem", "entry"}.issubset(classes)):
+            self._card_depth = self._depth
+            self._card = {}
+
+        if self._card is not None:
+            if tag in {"h1", "h2", "h3", "h4", "h5", "h6"} and "title" in classes:
+                self._captures["title"] = (tag, self._depth, [])
+            elif tag == "div" and "date" in classes:
+                if values.get("aria-label"):
+                    self._card["date"] = values["aria-label"]
+                self._captures["date_text"] = (tag, self._depth, [])
+            elif tag == "div" and "event_venue" in classes:
+                self._captures["venue"] = (tag, self._depth, [])
+
+            if tag == "a" and "title" in self._captures and values.get("href"):
+                self._card["permalink"] = urllib.parse.urljoin(
+                    self.base_url, values["href"])
+
+        if tag not in self._VOID:
+            self._depth += 1
+
+    def handle_data(self, data):
+        for _, _, parts in self._captures.values():
+            parts.append(data)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag not in self._VOID:
+            self._depth = max(0, self._depth - 1)
+
+        for name, (capture_tag, capture_depth, parts) in list(self._captures.items()):
+            if tag == capture_tag and self._depth == capture_depth:
+                value = " ".join("".join(parts).split())
+                if value and self._card is not None:
+                    self._card[name] = value
+                del self._captures[name]
+
+        if (self._card is not None and tag == "div"
+                and self._depth == self._card_depth):
+            self._finish_card()
+
+    def _finish_card(self):
+        card = self._card or {}
+        self._card = None
+        self._card_depth = None
+        self._captures.clear()
+        title = card.get("title")
+        permalink = card.get("permalink")
+        start, end = _card_dates(card.get("date") or card.get("date_text") or "")
+        if not (title and permalink and start):
+            return
+        self.events.append(StructuredEvent(
+            external_id=permalink,
+            title=title,
+            starts_at=start,
+            start_time_known=False,
+            ends_at=end,
+            venue_name=card.get("venue"),
+            permalink=permalink,
+            category=_category(title),
+            raw={"parser": "carbonhouse-card", **card},
+        ))
+
+
+def parse_event_cards(page: str, base_url: str) -> list[StructuredEvent]:
+    parser = _EventCardHTML(base_url)
+    parser.feed(page)
+    return _disambiguate_occurrences(parser.events)
 
 
 def _walk_json(value):
@@ -329,6 +461,10 @@ def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen):
         child, _, child_final = _request(calendar_url, opener=opener)
         return parse_ics(child.decode("utf-8-sig", errors="replace"), child_final), \
             "linked-ics", headers, child_final
+
+    events = parse_event_cards(text, final_url)
+    if events:
+        return events, "html-cards", headers, final_url
     return [], "unsupported", headers, final_url
 
 
@@ -415,7 +551,7 @@ def poll_source(conn: sqlite3.Connection, source_id: int,
             return {"source": source["name"], "found": 0, "new": 0, "updated": 0,
                     "unchanged": True}
         if not events:
-            raise ValueError("no iCalendar or schema.org Event data found")
+            raise ValueError("no iCalendar, schema.org Event, or supported event cards found")
         made = updated = 0
         for event in events:
             is_new, changed = _upsert_event(conn, source, event, checked)
