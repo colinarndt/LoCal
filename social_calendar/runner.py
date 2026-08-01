@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import sqlite3
 
-from . import avatars, discovery, geo, pipeline, websites
+from . import avatars, discovery, geo, pipeline, spend, websites
 
 
 HISTORY_WINDOW = "30 days"
@@ -91,7 +91,11 @@ def poll(conn: sqlite3.Connection, source, extractor, handles: list[str],
     # candidates for the Instagram caption pre-match below, which is how a
     # clear repeat announcement avoids a vision call in the same run.
     stats["websites"] = websites.poll_all(
-        conn, source_ids=website_source_ids, log=log)
+        conn, source_ids=website_source_ids, log=log, extractor=extractor)
+    # Website-only runs do not enter pipeline.process, so their nano call still
+    # needs an explicit drain into the spend ledger here.
+    spend.drain_into(conn, getattr(extractor, "meter", None))
+    conn.commit()
     log(f"websites: {stats['websites']}")
 
     batches = groups if groups is not None else [(newer_than, list(handles))]

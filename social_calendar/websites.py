@@ -1,10 +1,10 @@
 """Structured event ingestion from user-managed website calendars.
 
 The cheap path is deliberately first: iCalendar and schema.org Event JSON-LD
-already contain the fields the vision model would be asked to infer. Common
+already contain the fields a model would be asked to infer. Common
 server-rendered event cards are another cheap source when a venue's CMS omits
-those standards. Unsupported pages are reported rather than silently pushed
-through an expensive, unreliable arbitrary-page model call.
+those standards. Only pages that still have no events reach a guarded,
+text-only nano-model fallback.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from html.parser import HTMLParser
 from . import config, dedupe
 
 MAX_BYTES = 10 * 1024 * 1024
+MAX_MODEL_CHARS = 300_000
 USER_AGENT = "SocialCalendar/0.1 (+local personal calendar)"
 
 
@@ -42,6 +43,7 @@ class StructuredEvent:
     ends_at: str | None = None
     description: str = ""
     raw: dict | None = None
+    confidence: float = 1.0
 
 
 def _now() -> str:
@@ -261,9 +263,13 @@ def _walk_json(value):
             yield from _walk_json(item)
     elif isinstance(value, dict):
         yield value
-        for key in ("@graph", "itemListElement", "item"):
-            if key in value:
-                yield from _walk_json(value[key])
+        # Event objects are often nested under non-standard keys. For example,
+        # Comedy Zone publishes a Place whose events live in capital-E
+        # ``Events``. Walking every JSON value is safe and lets the @type test
+        # below decide what is actually an event.
+        for child in value.values():
+            if isinstance(child, (dict, list)):
+                yield from _walk_json(child)
 
 
 def _types(value) -> set[str]:
@@ -437,6 +443,156 @@ def parse_ics(body: str, base_url: str) -> list[StructuredEvent]:
     return _disambiguate_occurrences(out)
 
 
+class _VisibleHTML(HTMLParser):
+    """Reduce arbitrary HTML to visible text and explicit absolute links.
+
+    Scripts, styles, navigation, forms, and images are deliberately excluded:
+    they add tokens but no calendar facts, and source-page instructions must
+    never become instructions to the model.
+    """
+
+    _SKIP = {"script", "style", "svg", "noscript", "template", "nav", "header",
+             "footer", "form"}
+    _BLOCK = {"address", "article", "aside", "blockquote", "br", "dd", "div",
+              "dl", "dt", "figcaption", "figure", "h1", "h2", "h3", "h4",
+              "h5", "h6", "hr", "li", "main", "p", "section", "table", "td",
+              "th", "tr", "ul", "ol"}
+    _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+             "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self, base_url: str):
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.parts: list[str] = []
+        self.links: set[str] = set()
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if self._skip_depth:
+            if tag not in self._VOID:
+                self._skip_depth += 1
+            return
+        if tag in self._SKIP:
+            self._skip_depth = 1
+            return
+        values = {k.lower(): (v or "") for k, v in attrs}
+        if tag == "a" and values.get("href"):
+            url = urllib.parse.urljoin(self.base_url, values["href"])
+            parsed = urllib.parse.urlsplit(url)
+            if parsed.scheme in ("http", "https") and parsed.netloc:
+                url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path,
+                                               parsed.query, ""))
+                self.links.add(url)
+                self.parts.append(f"\nLINK {url}\n")
+        if tag in self._BLOCK:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if self._skip_depth:
+            self._skip_depth -= 1
+            return
+        if tag in self._BLOCK:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self._skip_depth:
+            text = " ".join(data.split())
+            if text:
+                self.parts.append(text + " ")
+
+
+def model_page_text(page: str, base_url: str) -> tuple[str, set[str]]:
+    """Return bounded visible page text plus the exact links it contains."""
+    parser = _VisibleHTML(base_url)
+    parser.feed(page)
+    lines: list[str] = []
+    previous = None
+    for raw in "".join(parser.parts).splitlines():
+        line = " ".join(raw.split())
+        if line and line != previous:
+            lines.append(line)
+            previous = line
+    text = "\n".join(lines)
+    if len(text) > MAX_MODEL_CHARS:
+        text = text[:MAX_MODEL_CHARS] + "\n[page text truncated]"
+    return text, parser.links
+
+
+def _events_from_model(output: dict, page_text: str, links: set[str],
+                       base_url: str, model: str | None = None) -> list[StructuredEvent]:
+    """Validate model output against the page before it can reach storage."""
+    if "_error" in output:
+        raise ValueError(f"AI website extraction failed: {output['_error']}")
+    visible = " ".join(page_text.casefold().split())
+    base_parts = urllib.parse.urlsplit(base_url)
+    page_url = urllib.parse.urlunsplit((base_parts.scheme, base_parts.netloc,
+                                       base_parts.path, base_parts.query, ""))
+    allowed_links = links | {page_url}
+    events: list[StructuredEvent] = []
+    for item in output.get("events") or []:
+        if not isinstance(item, dict):
+            continue
+        title = " ".join(str(item.get("title") or "").split())
+        if not title or " ".join(title.casefold().split()) not in visible:
+            continue
+        start, parsed_time_known = _local_iso(item.get("starts_at"))
+        if not start:
+            continue
+        raw_url = str(item.get("permalink") or "").strip()
+        url = urllib.parse.urljoin(base_url, raw_url)
+        parsed_url = urllib.parse.urlsplit(url)
+        url = urllib.parse.urlunsplit((parsed_url.scheme, parsed_url.netloc,
+                                      parsed_url.path, parsed_url.query, ""))
+        if parsed_url.scheme not in ("http", "https") or url not in allowed_links:
+            continue
+        time_known = bool(item.get("start_time_known")) and parsed_time_known
+        if not time_known:
+            start = start[:10]
+        end, _ = _local_iso(item.get("ends_at"))
+        category = str(item.get("category") or "other")
+        if category not in {"music", "theater", "comedy", "food", "market",
+                            "art", "opening", "other"}:
+            category = "other"
+        venue = _text(item.get("venue_name"))
+        description = _text(item.get("description")) or ""
+        price = _text(item.get("price_text"))
+        events.append(StructuredEvent(
+            external_id="|".join((url, start, title.casefold())),
+            title=title,
+            starts_at=start,
+            start_time_known=time_known,
+            ends_at=end,
+            venue_name=venue,
+            permalink=url,
+            category=category,
+            price_text=price,
+            description=description,
+            raw={"parser": "nano-html", "model": model or "nano", **item},
+            confidence=0.8,
+        ))
+    return _disambiguate_occurrences(events)
+
+
+@dataclass
+class FetchResult:
+    events: list[StructuredEvent] | None
+    kind: str
+    headers: dict
+    final_url: str
+    content_hash: str | None = None
+    model_output: str | None = None
+    model: str | None = None
+
+    def __iter__(self):
+        """Keep the original four-value unpacking API for callers and tests."""
+        yield self.events
+        yield self.kind
+        yield self.headers
+        yield self.final_url
+
+
 def _request(url: str, etag: str | None = None, modified: str | None = None,
              opener=urllib.request.urlopen, fresh: bool = False) -> tuple[bytes, dict, str]:
     headers = {"User-Agent": USER_AGENT,
@@ -492,10 +648,12 @@ def _parse_response(data: bytes, headers: dict, final_url: str,
     return [], "unsupported", final_url
 
 
-def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen):
+def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen,
+                 extractor=None, model_cache: sqlite3.Row | dict | None = None):
     request_url = source["url"]
     last_headers: dict = {}
     last_final_url = request_url
+    last_text = ""
     for attempt in range(4):
         try:
             data, headers, final_url = _request(
@@ -507,14 +665,14 @@ def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen):
             )
         except urllib.error.HTTPError as exc:
             if exc.code == 304:
-                return None, "unchanged", {}, source["url"]
+                return FetchResult(None, "unchanged", {}, source["url"])
             raise
         events, kind, parsed_url = _parse_response(data, headers, final_url, opener)
         if events or kind != "unsupported":
-            return events, kind, headers, parsed_url
+            return FetchResult(events, kind, headers, parsed_url)
 
         text = data.decode("utf-8-sig", errors="replace")
-        last_headers, last_final_url = headers, final_url
+        last_headers, last_final_url, last_text = headers, final_url, text
         redirected = final_url.rstrip("/") != request_url.rstrip("/")
         incomplete = "<title" not in text.lower() or "</html>" not in text.lower()
         if attempt == 3 or not (redirected or incomplete):
@@ -522,7 +680,48 @@ def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen):
         # Retry a genuinely incomplete response at the canonical target, but
         # never retry a complete page that is simply unsupported.
         request_url = final_url
-    return [], "unsupported", last_headers, last_final_url
+
+    page_text, links = model_page_text(last_text, last_final_url)
+    digest = hashlib.sha256(page_text.encode()).hexdigest()
+    from .extract import WEBSITE_PROMPT_VERSION
+
+    def cached(name, default=None):
+        if model_cache is None:
+            return default
+        try:
+            return model_cache[name]
+        except (KeyError, IndexError):
+            return default
+
+    raw_output = None
+    model = None
+    kind = "unsupported"
+    if (cached("content_hash") == digest
+            and cached("prompt_version") == WEBSITE_PROMPT_VERSION
+            and cached("raw_output")):
+        try:
+            output = json.loads(cached("raw_output"))
+        except (TypeError, ValueError):
+            output = None
+        if isinstance(output, dict):
+            raw_output = cached("raw_output")
+            model = cached("model")
+            kind = "model-cache"
+    elif extractor is not None and page_text:
+        output = extractor.website(page_text, last_final_url)
+        raw_output = json.dumps(output, ensure_ascii=False)
+        model = (extractor.model_for("website") if hasattr(extractor, "model_for")
+                 else getattr(extractor, "model", "nano"))
+        kind = "model-html"
+    else:
+        output = None
+
+    if isinstance(output, dict):
+        events = _events_from_model(output, page_text, links, last_final_url, model)
+        return FetchResult(events, kind, last_headers, last_final_url,
+                           digest, raw_output, model)
+    return FetchResult([], "unsupported", last_headers, last_final_url,
+                       digest)
 
 
 def _stable_post_id(source_id: int, external_id: str) -> str:
@@ -532,7 +731,8 @@ def _stable_post_id(source_id: int, external_id: str) -> str:
 
 def _event_hash(event: StructuredEvent) -> str:
     fields = [event.title, event.starts_at, event.ends_at, event.venue_name,
-              event.permalink, event.category, event.price_text, event.description]
+              event.permalink, event.category, event.price_text, event.description,
+              event.confidence]
     return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
 
 
@@ -545,6 +745,9 @@ def _upsert_event(conn: sqlite3.Connection, source, event: StructuredEvent,
     digest = _event_hash(event)
     raw = json.dumps(event.raw or {}, ensure_ascii=False)
     caption = "\n\n".join(x for x in (event.title, event.description) if x)
+    is_model = (event.raw or {}).get("parser") == "nano-html"
+    reasoning = ("AI extraction from visible website text" if is_model
+                 else "Structured website calendar data")
 
     if existing:
         conn.execute(
@@ -557,11 +760,11 @@ def _upsert_event(conn: sqlite3.Connection, source, event: StructuredEvent,
             "WHERE post_id=?", (caption, event.permalink, raw, seen_at, post_id))
         conn.execute(
             "UPDATE event SET title=?, starts_at=?, ends_at=?, start_time_known=?, "
-            "venue_name=?, venue_key=?, category=?, price_text=?, confidence=1, "
-            "date_reasoning='Structured website calendar data' WHERE id=?",
+            "venue_name=?, venue_key=?, category=?, price_text=?, confidence=?, "
+            "date_reasoning=? WHERE id=?",
             (event.title, event.starts_at, event.ends_at, int(event.start_time_known),
              event.venue_name, dedupe.normalize_venue(event.venue_name), event.category,
-             event.price_text, existing["event_id"]))
+             event.price_text, event.confidence, reasoning, existing["event_id"]))
         return False, True
 
     conn.execute(
@@ -570,45 +773,65 @@ def _upsert_event(conn: sqlite3.Connection, source, event: StructuredEvent,
         "VALUES (?,?,?,?,?,?,'web_event','[]',?,'website',?)",
         (post_id, source["linked_handle"] or "", source["linked_handle"], seen_at,
          caption, event.permalink, raw, seen_at))
+    stage = "website" if is_model else "structured"
+    prompt_version = "website-v1" if is_model else "structured-v1"
+    model = (event.raw or {}).get("model", "nano") if is_model else "parser"
     marker = conn.execute(
         "INSERT INTO extraction (post_id,stage,prompt_version,model,raw_output,is_error,created_at) "
-        "VALUES (?,'structured','structured-v1','parser',?,0,?)",
-        (post_id, raw, seen_at)).lastrowid
+        "VALUES (?,?,?,?,?,0,?)",
+        (post_id, stage, prompt_version, model, raw, seen_at)).lastrowid
     event_id = conn.execute(
         "INSERT INTO event (post_id,extraction_id,title,starts_at,ends_at,start_time_known,"
         "venue_name,venue_key,category,price_text,confidence,date_reasoning,created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,1,'Structured website calendar data',?)",
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (post_id, marker, event.title, event.starts_at, event.ends_at,
          int(event.start_time_known), event.venue_name,
          dedupe.normalize_venue(event.venue_name), event.category, event.price_text,
-         seen_at)).lastrowid
+         event.confidence, reasoning, seen_at)).lastrowid
     conn.execute(
         "INSERT INTO web_item (source_id,external_id,post_id,event_id,content_hash,"
         "first_seen_at,last_seen_at) VALUES (?,?,?,?,?,?,?)",
         (source["id"], event.external_id, post_id, event_id, digest, seen_at, seen_at))
     conn.execute(
         "INSERT OR IGNORE INTO event_source (event_id,source_kind,source_item_id,permalink,"
-        "match_method,created_at) VALUES (?,'website',?,?,'structured',?)",
-        (event_id, post_id, event.permalink, seen_at))
+        "match_method,created_at) VALUES (?,'website',?,?,?,?)",
+        (event_id, post_id, event.permalink,
+         "extracted" if is_model else "structured", seen_at))
     return True, False
 
 
 def poll_source(conn: sqlite3.Connection, source_id: int,
-                opener=urllib.request.urlopen) -> dict:
+                opener=urllib.request.urlopen, extractor=None) -> dict:
     source = conn.execute("SELECT * FROM web_source WHERE id=?", (source_id,)).fetchone()
     if source is None:
         raise ValueError("no such website source")
     checked = _now()
     try:
-        events, kind, headers, _ = fetch_events(source, opener)
+        cache = conn.execute(
+            "SELECT * FROM web_parse_cache WHERE source_id=?", (source_id,)).fetchone()
+        result = fetch_events(source, opener, extractor=extractor, model_cache=cache)
+        events, kind, headers, _ = result
         if events is None:
             conn.execute(
                 "UPDATE web_source SET last_checked_at=?, last_success_at=?, last_error=NULL "
                 "WHERE id=?", (checked, checked, source_id))
             return {"source": source["name"], "found": 0, "new": 0, "updated": 0,
                     "unchanged": True}
+        if result.model_output is not None:
+            from .extract import WEBSITE_PROMPT_VERSION
+            conn.execute(
+                "INSERT INTO web_parse_cache "
+                "(source_id,content_hash,prompt_version,model,raw_output,created_at) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
+                "content_hash=excluded.content_hash,prompt_version=excluded.prompt_version,"
+                "model=excluded.model,raw_output=excluded.raw_output,created_at=excluded.created_at",
+                (source_id, result.content_hash, WEBSITE_PROMPT_VERSION,
+                 result.model or "nano", result.model_output, checked))
         if not events:
-            raise ValueError("no iCalendar, schema.org Event, or supported event cards found")
+            suffix = ("; AI fallback is unavailable because OPENAI_API_KEY is not set"
+                      if extractor is None else "; AI fallback found no verifiable events")
+            raise ValueError(
+                "no iCalendar, schema.org Event, or supported event cards found" + suffix)
         made = updated = 0
         for event in events:
             is_new, changed = _upsert_event(conn, source, event, checked)
@@ -630,7 +853,7 @@ def poll_source(conn: sqlite3.Connection, source_id: int,
 
 
 def poll_all(conn: sqlite3.Connection, source_ids: list[int] | None = None,
-             log=lambda *_: None, opener=urllib.request.urlopen) -> dict:
+             log=lambda *_: None, opener=urllib.request.urlopen, extractor=None) -> dict:
     where, params = "enabled=1", []
     if source_ids is not None:
         if not source_ids:
@@ -643,7 +866,7 @@ def poll_all(conn: sqlite3.Connection, source_ids: list[int] | None = None,
              "errors": 0, "error_messages": []}
     for row in rows:
         log(f"checking {row['name']} website")
-        result = poll_source(conn, row["id"], opener)
+        result = poll_source(conn, row["id"], opener, extractor=extractor)
         for key in ("found", "new", "updated"):
             total[key] += result.get(key, 0)
         total["errors"] += int("error" in result)

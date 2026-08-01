@@ -156,6 +156,10 @@ def cmd_run_once(args) -> None:
             sys.exit("APIFY_TOKEN not set.\n  Run `python -m social_calendar.cli init`, or set it in .env.")
         source = ApifySource(token)
         extractor = _extractor(args.rung)
+    elif website_ids and os.getenv("OPENAI_API_KEY"):
+        # Structured sites still work without a key. Supplying one merely
+        # enables the nano fallback for pages with no supported markup.
+        extractor = _extractor(args.rung)
 
     # Measured on real data: posts older than 30 days produced 3% of upcoming
     # events while being 18% of fetches, so the window is worth narrowing.

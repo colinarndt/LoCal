@@ -412,10 +412,12 @@ def _fetch_worker(handles: list[str], website_source_ids: list[int],
     try:
         source = extractor = None
         if handles:
-            from .extract import Extractor
             from .sources import ApifySource
 
             source = ApifySource(os.environ["APIFY_TOKEN"])
+        if handles or (website_source_ids and os.getenv("OPENAI_API_KEY")):
+            from .extract import Extractor
+
             extractor = Extractor()
         with db.session(db_path) as conn:
             # Same grouping cron uses: each account asks only for what it has

@@ -115,6 +115,18 @@ CREATE TABLE IF NOT EXISTS web_item (
 );
 CREATE INDEX IF NOT EXISTS ix_web_item_source ON web_item(source_id);
 
+-- Successful arbitrary-page model results are cached by sanitized page hash.
+-- Most sites also send ETag/Last-Modified, but this prevents a repeated model
+-- call for sites that do not implement conditional requests.
+CREATE TABLE IF NOT EXISTS web_parse_cache (
+    source_id      INTEGER PRIMARY KEY REFERENCES web_source(id),
+    content_hash   TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    model          TEXT NOT NULL,
+    raw_output     TEXT NOT NULL,
+    created_at     TEXT NOT NULL
+);
+
 -- One displayed event may be supported by a venue website, the venue's own
 -- Instagram post, and several reposts. Keeping those references independently
 -- lets dedupe collapse records without losing provenance.

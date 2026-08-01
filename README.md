@@ -47,6 +47,9 @@ the app checks every source (as long as it's running in your menu bar).
 
 Website events published as iCalendar, schema.org structured data, or a supported
 server-rendered event listing go straight into the calendar without an AI call.
+For other layouts, the app sends sanitized visible text—not images, scripts, or
+raw markup—to the nano model, validates its links against the page, and caches
+the result until the page changes.
 When a later Instagram caption clearly identifies one of those events, the post
 is attached as another source and its flyer does not need to be processed again.
 
@@ -96,12 +99,14 @@ a day, and you can open the calendar whenever you want.
 
 ## What it costs
 
-Two APIs charge per use: Apify to fetch the posts, OpenAI to read them. Both
-bill per post, so the bill follows how many accounts you watch and not anything
-you do in the app.
+Two APIs charge per use: Apify to fetch Instagram posts, and OpenAI to read
+captions, flyers, or an otherwise unsupported events page. Instagram cost follows
+how many accounts you watch; a website fallback runs only when its page changes.
 
-Structured website calendars do not use either API. They add ordinary page
-requests but no metered scraping or model cost.
+Structured website calendars do not use either API. A page without usable
+structured data can use a small `gpt-5.4-nano` text call; that usage appears in
+the same spend total as Instagram extraction and is cached while the page stays
+unchanged.
 
 | Accounts you follow | Roughly per month |
 |---|---|
@@ -149,7 +154,8 @@ everything on your Mac.
 **Impatient?** Every account has a **fetch it now** button that polls just that
 one, every website has its own refresh button, and there is a refresh-all for the
 whole rotation. Paid Instagram actions show their estimated cost first; structured
-website fetches are direct and free.
+website fetches are direct and free, while unsupported layouts can use the cached
+nano text fallback described above.
 
 **Interested, hide, flag.** Every event has three buttons. The model is good, not
 perfect, and you are the last word on what stays.
