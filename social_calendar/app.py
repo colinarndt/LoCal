@@ -108,6 +108,42 @@ def _money(usd: float) -> str:
     return f"${usd:,.2f}"
 
 
+def _install_main_menu(app) -> None:
+    """Install the standard responder-chain editing shortcuts.
+
+    AppKit does not synthesize these for a programmatic menu-bar application.
+    Text fields and WKWebView still know how to perform ``copy:``/``paste:``,
+    which is why their context menus work, but Command-key equivalents are only
+    dispatched when matching items exist in the application's main menu.
+    Targets stay nil so AppKit sends each action to the focused text control.
+    """
+    main = NSMenu.alloc().initWithTitle_("Main Menu")
+
+    app_root = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Instagram Calendar", None, "")
+    main.addItem_(app_root)
+    app_menu = NSMenu.alloc().initWithTitle_("Instagram Calendar")
+    app_root.setSubmenu_(app_menu)
+    app_menu.addItem_(NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Quit Instagram Calendar", "terminate:", "q"))
+
+    edit_root = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Edit", None, "")
+    main.addItem_(edit_root)
+    edit = NSMenu.alloc().initWithTitle_("Edit")
+    edit_root.setSubmenu_(edit)
+    for title, action, key in (
+        ("Cut", "cut:", "x"),
+        ("Copy", "copy:", "c"),
+        ("Paste", "paste:", "v"),
+        ("Select All", "selectAll:", "a"),
+    ):
+        edit.addItem_(NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            title, action, key))
+
+    app.setMainMenu_(main)
+
+
 class AppDelegate(NSObject):
 
     # PyObjC constructs via alloc().init(); __init__ is not called for us.
@@ -473,6 +509,7 @@ def main() -> None:
     time.sleep(0.4)
 
     app = NSApplication.sharedApplication()
+    _install_main_menu(app)
     # Accessory: menu bar only, no Dock icon and no menu bar takeover.
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     delegate = AppDelegate.alloc().initWithPort_(port)
