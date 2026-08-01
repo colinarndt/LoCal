@@ -1,3 +1,4 @@
+import gzip
 import json
 
 from social_calendar import db, pipeline, websites
@@ -39,11 +40,13 @@ CARBONHOUSE = """<!doctype html><html><body>
 
 
 class Response:
-    def __init__(self, body: str, url="https://venue.example/events",
-                 content_type="text/html; charset=utf-8"):
-        self.body = body.encode()
+    def __init__(self, body: str | bytes, url="https://venue.example/events",
+                 content_type="text/html; charset=utf-8", content_encoding=None):
+        self.body = body if isinstance(body, bytes) else body.encode()
         self.url = url
         self.headers = {"Content-Type": content_type, "ETag": '"one"'}
+        if content_encoding:
+            self.headers["Content-Encoding"] = content_encoding
 
     def __enter__(self):
         return self
@@ -136,6 +139,45 @@ def test_fetch_events_falls_back_to_supported_html_cards():
     source = {"url": "https://www.blumenthalarts.org/events",
               "etag": None, "last_modified": None}
     events, kind, _, _ = websites.fetch_events(source, opener_for(CARBONHOUSE))
+
+    assert kind == "html-cards"
+    assert len(events) == 2
+
+
+def test_fetch_events_retries_incomplete_redirect_response_at_canonical_url():
+    calls = []
+
+    def intermittent_opener(request, timeout=30):
+        calls.append(request)
+        if len(calls) == 1:
+            return Response("<html><body>temporary shell",  # deliberately incomplete
+                            "https://www.blumenthalarts.org/events")
+        return Response(CARBONHOUSE, "https://www.blumenthalarts.org/events")
+
+    source = {"url": "https://blumenthalarts.org/events",
+              "etag": '"stale"', "last_modified": "yesterday"}
+    events, kind, _, final_url = websites.fetch_events(source, intermittent_opener)
+
+    assert kind == "html-cards"
+    assert len(events) == 2
+    assert final_url == "https://www.blumenthalarts.org/events"
+    assert [request.full_url for request in calls] == [
+        "https://blumenthalarts.org/events",
+        "https://www.blumenthalarts.org/events",
+    ]
+    assert calls[0].has_header("If-none-match")
+    assert not calls[1].has_header("If-none-match")
+    assert calls[1].get_header("Cache-control") == "no-cache"
+
+
+def test_fetch_events_decompresses_gzip_html_before_parsing():
+    def compressed_opener(request, timeout=30):
+        return Response(gzip.compress(CARBONHOUSE.encode()), request.full_url,
+                        content_encoding="gzip")
+
+    source = {"url": "https://www.blumenthalarts.org/events",
+              "etag": None, "last_modified": None}
+    events, kind, _, _ = websites.fetch_events(source, compressed_opener)
 
     assert kind == "html-cards"
     assert len(events) == 2

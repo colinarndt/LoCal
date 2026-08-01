@@ -410,11 +410,21 @@ def _fetch_worker(handles: list[str], website_source_ids: list[int],
             stats = runner.poll(conn, source, extractor, handles, limit,
                                 groups=groups, log=progress,
                                 website_source_ids=website_source_ids)
-        JOB.update(state="done", stats=stats,
-                   message=(f"{stats['websites']['new']} website events, "
-                            f"{stats['ingested']} new posts, "
-                            f"{stats['processed'].get('events', 0)} extracted events, "
-                            f"{stats['processed'].get('vision_skipped', 0)} flyers skipped"))
+        website_stats = stats["websites"]
+        message = (f"{website_stats['new']} website events, "
+                   f"{stats['ingested']} new posts, "
+                   f"{stats['processed'].get('events', 0)} extracted events, "
+                   f"{stats['processed'].get('vision_skipped', 0)} flyers skipped")
+        if website_stats["errors"]:
+            details = "; ".join(website_stats.get("error_messages", []))
+            if not handles and website_stats["errors"] == website_stats["sources"]:
+                JOB.update(state="error", stats=stats,
+                           message=details or "website fetch failed")
+            else:
+                JOB.update(state="done", stats=stats,
+                           message=f"{message}; {website_stats['errors']} website failed: {details}")
+        else:
+            JOB.update(state="done", stats=stats, message=message)
     except Exception as exc:
         # Surfaced in the UI rather than only in the server log -- a fetch that
         # silently did nothing is worse than one that says why.

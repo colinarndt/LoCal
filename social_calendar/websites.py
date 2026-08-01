@@ -10,6 +10,7 @@ through an expensive, unreliable arbitrary-page model call.
 from __future__ import annotations
 
 import datetime as dt
+import gzip
 import hashlib
 import html
 import json
@@ -18,6 +19,7 @@ import sqlite3
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -419,8 +421,12 @@ def parse_ics(body: str, base_url: str) -> list[StructuredEvent]:
 
 
 def _request(url: str, etag: str | None = None, modified: str | None = None,
-             opener=urllib.request.urlopen) -> tuple[bytes, dict, str]:
-    headers = {"User-Agent": USER_AGENT, "Accept": "text/calendar,text/html,application/xhtml+xml"}
+             opener=urllib.request.urlopen, fresh: bool = False) -> tuple[bytes, dict, str]:
+    headers = {"User-Agent": USER_AGENT,
+               "Accept": "text/calendar,text/html,application/xhtml+xml",
+               "Accept-Encoding": "gzip, deflate"}
+    if fresh:
+        headers.update({"Cache-Control": "no-cache", "Pragma": "no-cache"})
     if etag:
         headers["If-None-Match"] = etag
     if modified:
@@ -431,25 +437,26 @@ def _request(url: str, etag: str | None = None, modified: str | None = None,
         if len(data) > MAX_BYTES:
             raise ValueError("calendar response is larger than 10 MB")
         response_headers = {k.lower(): v for k, v in response.headers.items()}
+        encoding = response_headers.get("content-encoding", "").lower()
+        if "gzip" in encoding:
+            data = gzip.decompress(data)
+        elif "deflate" in encoding:
+            data = zlib.decompress(data)
+        if len(data) > MAX_BYTES:
+            raise ValueError("decompressed calendar response is larger than 10 MB")
         return data, response_headers, response.geturl()
 
 
-def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen):
-    try:
-        data, headers, final_url = _request(source["url"], source["etag"],
-                                            source["last_modified"], opener)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 304:
-            return None, "unchanged", {}, source["url"]
-        raise
+def _parse_response(data: bytes, headers: dict, final_url: str,
+                    opener) -> tuple[list[StructuredEvent], str, str]:
     text = data.decode("utf-8-sig", errors="replace")
     content_type = headers.get("content-type", "").lower()
     if "text/calendar" in content_type or "BEGIN:VCALENDAR" in text[:1000]:
-        return parse_ics(text, final_url), "ics", headers, final_url
+        return parse_ics(text, final_url), "ics", final_url
 
     events = parse_jsonld(text, final_url)
     if events:
-        return events, "json-ld", headers, final_url
+        return events, "json-ld", final_url
 
     parser = _StructuredHTML()
     parser.feed(text)
@@ -460,12 +467,45 @@ def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen):
         calendar_url = urllib.parse.urljoin(final_url, link)
         child, _, child_final = _request(calendar_url, opener=opener)
         return parse_ics(child.decode("utf-8-sig", errors="replace"), child_final), \
-            "linked-ics", headers, child_final
+            "linked-ics", child_final
 
     events = parse_event_cards(text, final_url)
     if events:
-        return events, "html-cards", headers, final_url
-    return [], "unsupported", headers, final_url
+        return events, "html-cards", final_url
+    return [], "unsupported", final_url
+
+
+def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen):
+    request_url = source["url"]
+    last_headers: dict = {}
+    last_final_url = request_url
+    for attempt in range(4):
+        try:
+            data, headers, final_url = _request(
+                request_url,
+                source["etag"] if attempt == 0 else None,
+                source["last_modified"] if attempt == 0 else None,
+                opener,
+                fresh=attempt > 0,
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code == 304:
+                return None, "unchanged", {}, source["url"]
+            raise
+        events, kind, parsed_url = _parse_response(data, headers, final_url, opener)
+        if events or kind != "unsupported":
+            return events, kind, headers, parsed_url
+
+        text = data.decode("utf-8-sig", errors="replace")
+        last_headers, last_final_url = headers, final_url
+        redirected = final_url.rstrip("/") != request_url.rstrip("/")
+        incomplete = "<title" not in text.lower() or "</html>" not in text.lower()
+        if attempt == 3 or not (redirected or incomplete):
+            break
+        # Retry a genuinely incomplete response at the canonical target, but
+        # never retry a complete page that is simply unsupported.
+        request_url = final_url
+    return [], "unsupported", last_headers, last_final_url
 
 
 def _stable_post_id(source_id: int, external_id: str) -> str:
@@ -577,16 +617,22 @@ def poll_all(conn: sqlite3.Connection, source_ids: list[int] | None = None,
     where, params = "enabled=1", []
     if source_ids is not None:
         if not source_ids:
-            return {"sources": 0, "found": 0, "new": 0, "updated": 0, "errors": 0}
+            return {"sources": 0, "found": 0, "new": 0, "updated": 0,
+                    "errors": 0, "error_messages": []}
         where += f" AND id IN ({','.join('?' * len(source_ids))})"
         params.extend(source_ids)
     rows = conn.execute(f"SELECT id,name FROM web_source WHERE {where} ORDER BY name", params).fetchall()
-    total = {"sources": len(rows), "found": 0, "new": 0, "updated": 0, "errors": 0}
+    total = {"sources": len(rows), "found": 0, "new": 0, "updated": 0,
+             "errors": 0, "error_messages": []}
     for row in rows:
         log(f"checking {row['name']} website")
         result = poll_source(conn, row["id"], opener)
         for key in ("found", "new", "updated"):
             total[key] += result.get(key, 0)
         total["errors"] += int("error" in result)
+        if "error" in result:
+            message = f"{result['source']}: {result['error']}"
+            total["error_messages"].append(message)
+            log(message)
         conn.commit()
     return total

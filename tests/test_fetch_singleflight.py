@@ -74,3 +74,20 @@ def test_the_slot_frees_up_once_the_job_finishes():
     web.start_fetch(["a"], "first")
     web.JOB.update(state="done")
     assert web.start_fetch(["a"], "second") is None
+
+
+def test_website_only_failure_is_reported_as_failed(monkeypatch, tmp_path):
+    monkeypatch.setattr(web.runner, "fetch_windows", lambda conn, handles: [])
+    monkeypatch.setattr(web.runner, "poll", lambda *args, **kwargs: {
+        "websites": {
+            "sources": 1, "found": 0, "new": 0, "updated": 0, "errors": 1,
+            "error_messages": ["Venue: ValueError: unsupported response"],
+        },
+        "ingested": 0,
+        "processed": {"events": 0, "vision_skipped": 0},
+    })
+
+    web._fetch_worker([], [1], str(tmp_path / "calendar.db"), 20)
+
+    assert web.JOB["state"] == "error"
+    assert web.JOB["message"] == "Venue: ValueError: unsupported response"
