@@ -63,22 +63,52 @@ def media(name: str):
     abort(404)
 
 
-def day_label(iso: str, today: dt.date) -> str:
-    """Friendlier than a bare ISO date: weekday inside a week, then a written
-    date, with the year only when it is not the current one."""
+def _local_datetime(value: str | None) -> dt.datetime | None:
+    """Parse a stored ISO value and convert aware timestamps to the app zone.
+
+    Event extraction intentionally stores naive datetimes as already-local wall
+    time. Operational timestamps are UTC-aware. Keeping those two conventions
+    here prevents either kind from being shifted incorrectly for display.
+    """
+    if not value:
+        return None
     try:
-        d = dt.date.fromisoformat(iso)
+        parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except ValueError:
-        return iso
-    delta = (d - today).days
-    if delta == 0:
-        return "Today"
-    if delta == 1:
-        return "Tomorrow"
-    if 0 < delta < 7:
-        return d.strftime("%A")
-    base = d.strftime("%A, %B %-d")
-    return base if d.year == today.year else f"{base}, {d.year}"
+        try:
+            day = dt.date.fromisoformat(str(value)[:10])
+        except ValueError:
+            return None
+        return dt.datetime.combine(day, dt.time())
+    return parsed.astimezone(config.tzinfo()) if parsed.tzinfo else parsed
+
+
+@app.template_filter("short_date")
+def short_date(value: str | None) -> str:
+    """A local, compact date such as ``Aug 1``."""
+    parsed = _local_datetime(value)
+    if parsed is None:
+        return str(value or "")
+    return parsed.strftime("%b %-d")
+
+
+@app.template_filter("local_stamp")
+def local_stamp(value: str | None) -> str:
+    """A UTC-safe UI timestamp such as ``Aug 1, 1:30pm``."""
+    parsed = _local_datetime(value)
+    if parsed is None:
+        return str(value or "")
+    date = short_date(value)
+    hour = parsed.hour % 12 or 12
+    suffix = "am" if parsed.hour < 12 else "pm"
+    time = (f"{hour}:{parsed.minute:02d}{suffix}" if parsed.minute
+            else f"{hour}{suffix}")
+    return f"{date}, {time}"
+
+
+def day_label(iso: str, today: dt.date) -> str:
+    """Compact local date used by list section headings."""
+    return short_date(iso)
 
 
 @app.template_filter("clock")
@@ -86,9 +116,8 @@ def clock(starts_at: str | None) -> str:
     """19:30 -> 7:30pm, 20:00 -> 8pm. Drops ':00' because nobody says 'eight oh clock'."""
     if not starts_at or "T" not in str(starts_at):
         return ""
-    try:
-        t = dt.datetime.fromisoformat(starts_at)
-    except ValueError:
+    t = _local_datetime(starts_at)
+    if t is None:
         return ""
     hour = t.hour % 12 or 12
     suffix = "am" if t.hour < 12 else "pm"
@@ -180,7 +209,7 @@ def _filters(args) -> tuple[str, list]:
         params += [weeks[0][0].isoformat(), weeks[-1][-1].isoformat()]
     elif args.get("when", "upcoming") == "upcoming":
         where.append("substr(e.starts_at,1,10) >= ?")
-        params.append(dt.date.today().isoformat())
+        params.append(dt.datetime.now(config.tzinfo()).date().isoformat())
     return " AND ".join(where), params
 
 
@@ -239,7 +268,7 @@ def _rows(conn, args):
 
 @app.route("/")
 def index():
-    today = dt.date.today()
+    today = dt.datetime.now(config.tzinfo()).date()
 
     # The grid needs a month even when the URL omits one, and _filters() reads
     # it off args -- so resolve it up front and hand the filters a copy.
@@ -260,7 +289,9 @@ def index():
             d = dict(r)
             imgs = json.loads(d.get("local_images") or "[]")
             d["thumb"] = imgs[0] if imgs else None
-            grouped.setdefault(d["starts_at"][:10], []).append(d)
+            local = _local_datetime(d["starts_at"])
+            day = local.date().isoformat() if local else d["starts_at"][:10]
+            grouped.setdefault(day, []).append(d)
         days = [{"date": k, "label": day_label(k, today), "events": v}
                 for k, v in grouped.items()]
 

@@ -1,7 +1,28 @@
+import datetime as dt
+import zoneinfo
+
 from werkzeug.datastructures import MultiDict
 
 from social_calendar import db, web
 from social_calendar.web import _filters
+
+
+def test_ui_dates_and_times_are_short_and_converted_to_configured_zone(monkeypatch):
+    eastern = zoneinfo.ZoneInfo("America/New_York")
+    monkeypatch.setattr(web.config, "tzinfo", lambda: eastern)
+
+    # This UTC instant is still July 31 in New York.
+    value = "2026-08-01T01:30:00+00:00"
+    assert web.short_date(value) == "Jul 31"
+    assert web.clock(value) == "9:30pm"
+    assert web.local_stamp(value) == "Jul 31, 9:30pm"
+
+
+def test_naive_event_time_is_already_local(monkeypatch):
+    monkeypatch.setattr(
+        web.config, "tzinfo", lambda: dt.timezone(dt.timedelta(hours=-4)))
+
+    assert web.clock("2026-08-01T20:00:00") == "8pm"
 
 
 def test_until_is_not_a_hidden_filter_after_date_field_removal():
@@ -86,6 +107,7 @@ def test_confirm_returns_to_the_event_card(tmp_path, monkeypatch):
     )
 
     assert b'id="event-1"' in page.data
+    assert b'<div class="day" id="d-2026-08-01">Aug 1</div>' in page.data
     assert b'class="confirm-form"' in page.data
     assert b"event.preventDefault()" in page.data
     assert b'/static/icon.svg' in page.data

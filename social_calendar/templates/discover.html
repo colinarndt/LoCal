@@ -148,7 +148,7 @@
       <div class="handle">{{ source['url'] }}{% if source['linked_handle'] %}
         · linked to @{{ source['linked_handle'] }}{% endif %}</div>
       {% if source['last_error'] %}<div class="why">{{ source['last_error'] }}</div>
-      {% elif source['last_success_at'] %}<div class="why">last checked {{ source['last_success_at'][:16]|replace('T', ' ') }}</div>
+      {% elif source['last_success_at'] %}<div class="why">last checked {{ source['last_success_at']|local_stamp }}</div>
       {% else %}<div class="why">not checked yet</div>{% endif %}
     </div>
     <div class="source-actions">

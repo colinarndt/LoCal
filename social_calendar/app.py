@@ -239,7 +239,7 @@ class AppDelegate(NSObject):
         # Never labelled "all time": this ledger postdates the install, so spend
         # before it started cannot be reconstructed. Say when counting began
         # instead of showing a number that quietly understates the real total.
-        lines.append(f"Since {totals['since'][:10]}: {_money(totals['all_time'])} "
+        lines.append(f"Since {web.short_date(totals['since'])}: {_money(totals['all_time'])} "
                      f"({totals['calls']} calls)")
         if totals.get("estimated_usd"):
             # Apify reports actual dollars per run, but not for every actor
