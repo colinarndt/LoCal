@@ -68,10 +68,21 @@
   .setup code { background:rgba(128,128,128,.15); border-radius:4px; padding:1px 5px; }
   .setup a { color:inherit; }
 
-  .views { display:flex; gap:6px; margin:10px 0 0; }
+  .viewbar { display:flex; align-items:center; gap:10px; margin:10px 0 0; }
+  .views { display:flex; gap:6px; margin:0; flex:none; }
   .views a { font-size:.85rem; padding:5px 14px; border:1px solid var(--line);
              border-radius:999px; text-decoration:none; color:var(--muted); }
   .views a.on { background:var(--accent); border-color:transparent; color:#fff; }
+  .search { margin-left:auto; display:flex; justify-content:flex-end; gap:6px;
+            min-width:0; flex:1; }
+  .search input { width:min(290px,100%); min-width:0; font:inherit; padding:6px 10px;
+                  border-radius:7px; border:1px solid var(--line);
+                  background:var(--card); color:var(--ink); }
+  .search input:focus { outline:2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+                        border-color:var(--accent); }
+  .search button { font-size:.85rem; }
+  .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+             overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 
   .mnav { display:flex; align-items:center; gap:14px; margin:18px 0 10px; }
   .mnav strong { font-size:1.05rem; }
@@ -188,12 +199,20 @@
   </div>
 {% endif %}
 
-<nav class="views">
-  <a class="{% if view != 'calendar' %}on{% endif %}"
-     href="?{{ query_with(args, view=None, month=None) }}">list</a>
-  <a class="{% if view == 'calendar' %}on{% endif %}"
-     href="?{{ query_with(args, view='calendar', month=args.get('month') or today[:7]) }}">calendar</a>
-</nav>
+<div class="viewbar">
+  <nav class="views">
+    <a class="{% if view != 'calendar' %}on{% endif %}"
+       href="?{{ query_with(args, view=None, month=None) }}">list</a>
+    <a class="{% if view == 'calendar' %}on{% endif %}"
+       href="?{{ query_with(args, view='calendar', month=args.get('month') or today[:7]) }}">calendar</a>
+  </nav>
+  <div class="search" role="search">
+    <label class="sr-only" for="q">Search event titles and post captions</label>
+    <input type="search" id="q" name="q" form="f" value="{{ args.get('q','') }}"
+           placeholder="Search events" autocomplete="off">
+    <button type="submit" form="f">Search</button>
+  </div>
+</div>
 
 <form class="filters" method="get" id="f">
   {% if view == 'calendar' %}

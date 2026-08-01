@@ -151,6 +151,20 @@ def _filters(args) -> tuple[str, list]:
             "JOIN source_post ap ON ap.post_id=aes.source_item_id "
             "WHERE aes.event_id=e.id AND (ap.polled_handle=? OR ap.attributed_handle=?)))")
         params += [account, account, account, account]
+    if search := (args.get("q") or "").strip():
+        # LIKE wildcards in a user's query should be ordinary characters. The
+        # correlated source lookup covers captions attached during dedupe too,
+        # not only the source_post chosen as the canonical event's display row.
+        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        where.append(
+            "(e.title LIKE ? ESCAPE '\\' COLLATE NOCASE OR "
+            "COALESCE(p.caption,'') LIKE ? ESCAPE '\\' COLLATE NOCASE OR "
+            "EXISTS (SELECT 1 FROM event_source ses "
+            "JOIN source_post sp ON sp.post_id=ses.source_item_id "
+            "WHERE ses.event_id=e.id AND "
+            "COALESCE(sp.caption,'') LIKE ? ESCAPE '\\' COLLATE NOCASE))")
+        params += [pattern, pattern, pattern]
     if args.get("confirmed") == "1":
         where.append("e.is_confirmed = 1")
     if args.get("review") == "1":
