@@ -211,7 +211,9 @@ active, last_polled_at, discovery_source (manual | tagged | suggested)
 ## 5. Pipeline
 
 ```
-poll → source_post → gate (text) → extract (vision) → resolve dates → dedupe → event → UI / ICS
+website calendar → structured event ───────────────────────────────┐
+                                                                  ├→ dedupe → event → UI / ICS
+Instagram → source_post → gate → caption pre-match → vision if new┘
 ```
 
 ### 5.1 Ingestion interface
@@ -222,7 +224,11 @@ class IngestionSource(Protocol):
     def source_name(self) -> str: ...
 ```
 
-One adapter in v1 (`ApifySource`). Phase 2 sources (Eventbrite, RA, venue RSS) implement the same protocol and land in the same `source_post` table with a different `source_name`. Re-scrape is idempotent on provider post ID.
+Instagram uses `ApifySource`. Website calendars are separately user-managed
+because they are mutable structured snapshots, not immutable posts. iCalendar
+and schema.org Event data bypass model extraction, retain their raw source item,
+and converge with Instagram before dedupe. Re-fetch is idempotent on the website
+source plus its stable event ID.
 
 ### 5.2 Cheap gate before vision
 
@@ -430,7 +436,7 @@ Responsive web served from the same local box, reached over Tailscale or LAN. No
 | ~~**2**~~ | ~~Web UI + filters, confirm/hide/flag, ICS~~ — **BUILT 2026-07-27** (`social_calendar/web.py`). Flask, server-rendered, responsive, dark-mode aware, binds 0.0.0.0 for phone access. | ⏳ use it to plan a weekend |
 | ~~**3**~~ | ~~Discovery queue~~ — **BUILT 2026-07-27** (`discovery.py`, `/discover`, `cli discover`). Ranks tagged accounts by events produced, not raw frequency. **The poll rotation now lives in the `account` table**; `accounts.txt` is only a seed for an empty DB. | ⏳ add ≥5 accounts I'd have missed |
 | **4** | Stories ingestion (authenticated, sub-24h cadence) | — |
-| **5** | Additional sources behind `IngestionSource` (Eventbrite, RA, venue RSS) | — |
+| ~~**5**~~ | ~~Structured website sources~~ — **BUILT 2026-08-01**. Manual website list, iCalendar + schema.org ingestion, cross-source provenance, and conservative caption matching that skips vision for known events. Arbitrary unstructured/JS calendars remain future adapters. | ⏳ validate against real venue sites |
 
 ---
 

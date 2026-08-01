@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import sqlite3
 
-from . import avatars, discovery, geo, pipeline
+from . import avatars, discovery, geo, pipeline, websites
 
 
 HISTORY_WINDOW = "30 days"
@@ -76,7 +76,8 @@ def relabel(conn: sqlite3.Connection) -> None:
 def poll(conn: sqlite3.Connection, source, extractor, handles: list[str],
          limit: int = 20, newer_than: str | None = None,
          max_posts: int | None = None, log=lambda *_: None,
-         groups: list[tuple[str, list[str]]] | None = None) -> dict:
+         groups: list[tuple[str, list[str]]] | None = None,
+         website_source_ids: list[int] | None = None) -> dict:
     """Run every stage for `handles`. Returns per-stage counts.
 
     `groups` fetches each set of handles under its own window (see
@@ -86,16 +87,25 @@ def poll(conn: sqlite3.Connection, source, extractor, handles: list[str],
     """
     stats: dict = {}
 
+    # Structured calendars go first. Their authoritative event records become
+    # candidates for the Instagram caption pre-match below, which is how a
+    # clear repeat announcement avoids a vision call in the same run.
+    stats["websites"] = websites.poll_all(
+        conn, source_ids=website_source_ids, log=log)
+    log(f"websites: {stats['websites']}")
+
     batches = groups if groups is not None else [(newer_than, list(handles))]
     stats["ingested"] = 0
-    for window, batch in batches:
+    for window, batch in (batches if handles else []):
         if len(batches) > 1:
             log(f"fetching {len(batch)} account(s), window {window}")
         stats["ingested"] += pipeline.ingest(conn, source, batch, limit,
                                              newer_than=window)
     log(f"ingested {stats['ingested']} new posts")
 
-    stats["processed"] = pipeline.process(conn, extractor, max_posts)
+    stats["processed"] = (pipeline.process(conn, extractor, max_posts) if handles else
+                          {"seen": 0, "gated_out": 0, "gate_skipped": 0,
+                           "vision_skipped": 0, "events": 0, "errors": 0, "flagged": 0})
     log(f"processing: {stats['processed']}")
 
     stats["series"] = pipeline.expand_series(conn)

@@ -175,7 +175,7 @@
   <span class="count">
     {# calendar totals cover the whole grid, spill days included -- not just the month #}
     {{ total }} event{{ '' if total == 1 else 's' }}{% if view == 'calendar' %}<span class="inview"> in view</span>{% endif %}
-    · <a href="/discover">accounts</a>
+    · <a href="/discover">sources</a>
     · <a href="/settings">settings</a>
   </span>
 </header>
@@ -289,7 +289,7 @@
         {% if e['category'] %}<span class="badge">{{ e['category'] }}</span>{% endif %}
         {% if e['occurrence_of'] %}<span class="badge">recurring</span>{% endif %}
         {% if e['source_count'] > 1 %}
-          <span class="badge">{{ e['source_count'] }} posts</span>{% endif %}
+          <span class="badge">{{ e['source_count'] }} sources</span>{% endif %}
         {% if e['is_confirmed'] %}<span class="badge confirmed-badge">✓ confirmed</span>{% endif %}
       </div>
       {% if e['needs_review'] %}

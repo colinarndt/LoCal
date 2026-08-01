@@ -20,10 +20,21 @@ DMG="dist/${APP_NAME}.dmg"
 STAGE="build/dmg"
 
 if [ "${1:-}" != "--no-build" ]; then
+    if [ -x ".venv/bin/python" ] && [ -x ".venv/bin/pyinstaller" ]; then
+        CALENDAR_PYTHON=".venv/bin/python"
+        CALENDAR_PYINSTALLER=".venv/bin/pyinstaller"
+    else
+        CALENDAR_PYTHON="$(command -v python3 || command -v python)"
+        CALENDAR_PYINSTALLER="$(command -v pyinstaller || true)"
+    fi
+    [ -n "$CALENDAR_PYINSTALLER" ] || {
+        echo "error: pyinstaller not found (install it or create .venv)" >&2
+        exit 1
+    }
     echo "==> Drawing AppIcon.icns"
-    python make_icon.py
+    "$CALENDAR_PYTHON" make_icon.py
     echo "==> Building ${APP_NAME}.app"
-    pyinstaller --noconfirm InstagramCalendar.spec
+    "$CALENDAR_PYINSTALLER" --noconfirm InstagramCalendar.spec
 fi
 
 [ -d "$APP" ] || { echo "error: $APP not found (run without --no-build)" >&2; exit 1; }

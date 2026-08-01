@@ -62,7 +62,9 @@ def human_date(iso: str | None) -> str:
 def _content(post: dict, stage: str, media_dir: Path) -> list[dict]:
     if stage == "gate":
         caption = (post.get("caption") or "").strip() or "(no caption)"
-        return [{"type": "input_text", "text": f"Caption:\n{caption}"}]
+        return [{"type": "input_text", "text": (
+            f"This post was published on {human_date(post.get('posted_at'))}.\n"
+            f"Caption:\n{caption}")}]
 
     blocks: list[dict] = []
     for name in post.get("local_images") or []:

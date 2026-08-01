@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "instagram-calendar"
 version = "0.1.0"
-description = "Turns Instagram event announcements into a filterable local calendar and ICS feed."
+description = "Turns Instagram and venue website announcements into a filterable local calendar."
 readme = "README.md"
 requires-python = ">=3.11"
 

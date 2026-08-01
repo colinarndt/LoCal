@@ -128,21 +128,20 @@ def cmd_init(args) -> None:
 
 def cmd_run_once(args) -> None:
     _env()
-    token = os.getenv("APIFY_TOKEN")
-    if not token:
-        sys.exit("APIFY_TOKEN not set.\n  Run `python -m social_calendar.cli init`, or set it in .env.")
     # The poll rotation lives in the DB so approvals in /discover take effect.
     # A seed file is only used for an empty database, and only when asked for --
     # a fresh clone must not silently start polling the author's Charlotte venues.
     with db.session(args.db) as conn:
         handles = discovery.approved_handles(conn)
-        if not handles and not args.accounts:
+        website_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM web_source WHERE enabled=1 ORDER BY id")]
+        if not handles and not website_ids and not args.accounts:
             sys.exit(
-                "No accounts approved yet, so there is nothing to poll.\n"
+                "No Instagram accounts or websites are followed yet.\n"
                 "  python -m social_calendar.cli init          # setup, incl. suggestions\n"
-                "  python -m social_calendar.web               # then approve at /discover\n"
+                "  python -m social_calendar.web               # add sources at /discover\n"
                 f"  ...or seed from a file: --accounts {ACCOUNTS.name}")
-        if not handles:
+        if not handles and args.accounts:
             handles = read_accounts(Path(args.accounts))
             print(f"seeding rotation from {args.accounts}")
             for h in handles:
@@ -150,7 +149,13 @@ def cmd_run_once(args) -> None:
                     "INSERT INTO account (handle, is_polled, seen_count, discovery_source, "
                     "added_at, status) VALUES (?,1,0,'manual',datetime('now'),'approved') "
                     "ON CONFLICT(handle) DO UPDATE SET is_polled=1, status='approved'", (h,))
-    source = ApifySource(token)
+    source = extractor = None
+    if handles:
+        token = os.getenv("APIFY_TOKEN")
+        if not token:
+            sys.exit("APIFY_TOKEN not set.\n  Run `python -m social_calendar.cli init`, or set it in .env.")
+        source = ApifySource(token)
+        extractor = _extractor(args.rung)
 
     # Measured on real data: posts older than 30 days produced 3% of upcoming
     # events while being 18% of fetches, so the window is worth narrowing.
@@ -159,9 +164,11 @@ def cmd_run_once(args) -> None:
     for window, batch in groups:
         print(f"{len(batch)} account(s) -> posts newer than {window}")
 
-    est = source.estimate_cost(handles, args.limit)
-    print(f"{len(handles)} accounts x {args.limit} posts -> ~${est:.2f} scraping")
-    if not args.yes:
+    est = source.estimate_cost(handles, args.limit) if source else 0
+    print(f"{len(website_ids)} website(s) + {len(handles)} Instagram account(s)")
+    if handles:
+        print(f"{len(handles)} accounts x {args.limit} posts -> ~${est:.2f} scraping")
+    if handles and not args.yes:
         # Scheduled runs have no stdin, and a bare input() there dies with an
         # EOFError traceback. Spending money still requires saying so -- but say
         # it in the crontab, not into a pipe that cannot answer.
@@ -172,8 +179,9 @@ def cmd_run_once(args) -> None:
             sys.exit("Aborted.")
 
     with db.session(args.db) as conn:
-        runner.poll(conn, source, _extractor(args.rung), handles, args.limit,
-                    groups=groups, max_posts=args.max_posts, log=print)
+        runner.poll(conn, source, extractor, handles, args.limit,
+                    groups=groups, max_posts=args.max_posts, log=print,
+                    website_source_ids=website_ids)
 
 
 def cmd_import_spike(args) -> None:

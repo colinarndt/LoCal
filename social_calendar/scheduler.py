@@ -35,15 +35,29 @@ def last_poll(conn: sqlite3.Connection) -> dt.datetime | None:
     row = conn.execute(
         "SELECT MAX(last_polled_at) FROM account "
         "WHERE is_polled = 1 AND last_polled_at IS NOT NULL").fetchone()
-    if not row or not row[0]:
+    marks = [row[0]] if row and row[0] else []
+    # Older unit-test schemas and pre-migration databases may not have website
+    # sources yet, so the Instagram clock remains a valid fallback.
+    try:
+        web = conn.execute(
+            "SELECT MAX(last_checked_at) FROM web_source "
+            "WHERE enabled=1 AND last_checked_at IS NOT NULL").fetchone()
+        if web and web[0]:
+            marks.append(web[0])
+    except sqlite3.OperationalError:
+        pass
+    if not marks:
         return None
     try:
-        stamp = dt.datetime.fromisoformat(row[0])
+        parsed = [dt.datetime.fromisoformat(value) for value in marks]
+        parsed = [value if value.tzinfo else value.replace(tzinfo=dt.timezone.utc)
+                  for value in parsed]
+        stamp = max(parsed)
     except ValueError:
         return None
     # Marks are written in UTC, but tolerate a naive value rather than crashing
     # the scheduler thread over one malformed row.
-    return stamp if stamp.tzinfo else stamp.replace(tzinfo=dt.timezone.utc)
+    return stamp
 
 
 def hours_since_poll(conn: sqlite3.Connection, now: dt.datetime | None = None) -> float | None:

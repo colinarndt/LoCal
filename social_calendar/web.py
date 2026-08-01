@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 from flask import (Flask, Response, abort, redirect, render_template, request,
                    send_from_directory, url_for)
 
-from . import config, db, discovery, geo, paths, runner, spend
+from . import config, db, discovery, geo, paths, runner, spend, websites
 
 # Only so /settings can report whether a key is present. Values are never
 # rendered, logged, or accepted over HTTP -- see the note above that route.
@@ -145,8 +145,12 @@ def _filters(args) -> tuple[str, list]:
         where.append("e.venue_key = ?")
         params.append(venue)
     if account := args.get("account"):
-        where.append("(p.polled_handle = ? OR p.attributed_handle = ?)")
-        params += [account, account]
+        where.append(
+            "((p.polled_handle=? OR p.attributed_handle=?) OR "
+            "EXISTS (SELECT 1 FROM event_source aes "
+            "JOIN source_post ap ON ap.post_id=aes.source_item_id "
+            "WHERE aes.event_id=e.id AND (ap.polled_handle=? OR ap.attributed_handle=?)))")
+        params += [account, account, account, account]
     if args.get("confirmed") == "1":
         where.append("e.is_confirmed = 1")
     if args.get("review") == "1":
@@ -170,9 +174,14 @@ BASE_SELECT = """
 SELECT e.id, e.title, e.starts_at, e.start_time_known, e.venue_name, e.venue_key,
        e.category, e.price_text, e.needs_review, e.review_reason, e.is_confirmed,
        e.occurrence_of, e.dedupe_group, p.permalink, p.polled_handle,
-       p.attributed_handle, p.local_images, p.caption, p.posted_at,
+       p.attributed_handle,
+       COALESCE(NULLIF(p.local_images,'[]'),
+         (SELECT ip.local_images FROM event_source ies
+          JOIN source_post ip ON ip.post_id=ies.source_item_id
+          WHERE ies.event_id=e.id AND ip.local_images!='[]' LIMIT 1), '[]') AS local_images,
+       p.caption, p.posted_at,
        v.neighborhood, v.lat, v.lon, v.address,
-       (SELECT COUNT(*) FROM event s WHERE s.dedupe_group = e.dedupe_group) AS source_count
+       (SELECT COUNT(*) FROM event_source es WHERE es.event_id = e.id) AS source_count
 FROM event e LEFT JOIN source_post p ON p.post_id = e.post_id
               LEFT JOIN venue v ON v.venue_key = e.venue_key
 """
@@ -380,24 +389,32 @@ FETCH_LIMIT = 20
 POST_COST = 0.002   # ~$2.00 per 1,000 posts, same figure ApifySource quotes
 
 
-def _fetch_worker(handles: list[str], db_path: str, limit: int) -> None:
-    from .extract import Extractor
-    from .sources import ApifySource
+def _fetch_worker(handles: list[str], website_source_ids: list[int],
+                  db_path: str, limit: int) -> None:
 
     def progress(msg):
         JOB["message"] = str(msg)
 
     try:
-        source = ApifySource(os.environ["APIFY_TOKEN"])
+        source = extractor = None
+        if handles:
+            from .extract import Extractor
+            from .sources import ApifySource
+
+            source = ApifySource(os.environ["APIFY_TOKEN"])
+            extractor = Extractor()
         with db.session(db_path) as conn:
             # Same grouping cron uses: each account asks only for what it has
             # missed, so one new account cannot drag the rest back to 30 days.
             groups = runner.fetch_windows(conn, handles)
-            stats = runner.poll(conn, source, Extractor(), handles, limit,
-                                groups=groups, log=progress)
+            stats = runner.poll(conn, source, extractor, handles, limit,
+                                groups=groups, log=progress,
+                                website_source_ids=website_source_ids)
         JOB.update(state="done", stats=stats,
-                   message=f"{stats['ingested']} new posts, "
-                           f"{stats['processed'].get('events', 0)} events")
+                   message=(f"{stats['websites']['new']} website events, "
+                            f"{stats['ingested']} new posts, "
+                            f"{stats['processed'].get('events', 0)} extracted events, "
+                            f"{stats['processed'].get('vision_skipped', 0)} flyers skipped"))
     except Exception as exc:
         # Surfaced in the UI rather than only in the server log -- a fetch that
         # silently did nothing is worse than one that says why.
@@ -407,7 +424,8 @@ def _fetch_worker(handles: list[str], db_path: str, limit: int) -> None:
             JOB.update(state="error", message="worker exited without a result")
 
 
-def start_fetch(handles: list[str], label: str) -> str | None:
+def start_fetch(handles: list[str], label: str,
+                website_source_ids: list[int] | None = None) -> str | None:
     """Claim the single job slot and hand the batch to a worker thread.
 
     Returns None on success or an error slug. Deliberately free of any request
@@ -415,7 +433,8 @@ def start_fetch(handles: list[str], label: str) -> str | None:
     which is what keeps the scheduled run and a click in the UI sharing one lock
     instead of racing each other into two concurrent scrapes.
     """
-    missing = [k for k, _, _ in config.API_KEYS if not os.getenv(k)]
+    website_source_ids = list(website_source_ids or [])
+    missing = [k for k, _, _ in config.API_KEYS if handles and not os.getenv(k)]
     if missing:
         return "no-keys"
 
@@ -426,13 +445,14 @@ def start_fetch(handles: list[str], label: str) -> str | None:
                    label=label, message="starting...", stats=None)
 
     threading.Thread(target=_fetch_worker, daemon=True,
-                     args=(handles, app.config["DB"], FETCH_LIMIT)).start()
+                     args=(handles, website_source_ids, app.config["DB"], FETCH_LIMIT)).start()
     return None
 
 
-def _start_fetch(handles: list[str], label: str):
+def _start_fetch(handles: list[str], label: str,
+                 website_source_ids: list[int] | None = None):
     """Route-facing wrapper: same work, but answers with a redirect."""
-    err = start_fetch(handles, label)
+    err = start_fetch(handles, label, website_source_ids)
     return redirect(url_for("discover", **({"err": err} if err else {})))
 
 
@@ -440,7 +460,10 @@ def _start_fetch(handles: list[str], label: str):
 def fetch_now(handle: str):
     if not HANDLE_RE.match(handle):
         return redirect(url_for("discover", err="bad-handle"))
-    return _start_fetch([handle], f"@{handle}")
+    with db.session(app.config["DB"]) as conn:
+        website_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM web_source WHERE enabled=1 AND linked_handle=?", (handle,))]
+    return _start_fetch([handle], f"@{handle}", website_ids)
 
 
 @app.post("/discover/fetch-all")
@@ -452,10 +475,22 @@ def fetch_all():
     """
     with db.session(app.config["DB"]) as conn:
         handles = discovery.approved_handles(conn)
-    if not handles:
-        # fetch_recent([]) would still bill a run, so never let it start.
+        website_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM web_source WHERE enabled=1 ORDER BY id")]
+    if not handles and not website_ids:
         return redirect(url_for("discover", err="nothing-polled"))
-    return _start_fetch(handles, f"{len(handles)} accounts")
+    label = f"{len(handles)} accounts, {len(website_ids)} websites"
+    return _start_fetch(handles, label, website_ids)
+
+
+@app.post("/discover/website/<int:source_id>/fetch")
+def fetch_website(source_id: int):
+    with db.session(app.config["DB"]) as conn:
+        row = conn.execute("SELECT name FROM web_source WHERE id=? AND enabled=1",
+                           (source_id,)).fetchone()
+    if row is None:
+        return redirect(url_for("discover", err="bad-website"))
+    return _start_fetch([], row["name"], [source_id])
 
 
 @app.route("/jobs")
@@ -490,8 +525,12 @@ def discover():
         polled = conn.execute(
             "SELECT handle, display_name, avatar_file FROM account WHERE is_polled=1 "
             "ORDER BY handle").fetchall()
+        website_sources = conn.execute(
+            "SELECT * FROM web_source WHERE enabled=1 ORDER BY name").fetchall()
         return render_template("discover.html", queue=discovery.pending(conn),
                                polled=polled, added=request.args.get("added"),
+                               website_sources=website_sources,
+                               website_added=request.args.get("website_added"),
                                approved=request.args.get("approved"),
                                err=request.args.get("err"), job=job,
                                fetch_limit=FETCH_LIMIT,
@@ -521,6 +560,25 @@ def add_account():
             "'approved','added by hand') ON CONFLICT(handle) DO UPDATE SET "
             "is_polled=1, status='approved'", (raw,))
     return redirect(url_for("discover", added=raw))
+
+
+@app.post("/discover/website/add")
+def add_website():
+    try:
+        with db.session(app.config["DB"]) as conn:
+            source_id = websites.add_source(
+                conn, request.form.get("url") or "", request.form.get("name"),
+                request.form.get("linked_handle"))
+    except ValueError:
+        return redirect(url_for("discover", err="bad-website"))
+    return redirect(url_for("discover", website_added=source_id))
+
+
+@app.post("/discover/website/<int:source_id>/disable")
+def disable_website(source_id: int):
+    with db.session(app.config["DB"]) as conn:
+        conn.execute("UPDATE web_source SET enabled=0 WHERE id=?", (source_id,))
+    return redirect(url_for("discover"))
 
 
 @app.post("/discover/<handle>/<decision>")

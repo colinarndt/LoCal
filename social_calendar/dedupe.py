@@ -201,6 +201,7 @@ def group_events(events: list[dict], threshold: float = 0.6) -> list[dict]:
             # tie-broken by the earliest post (the original announcement).
             cluster.sort(
                 key=lambda e: (
+                    -int(e.get("source_name") == "website"),
                     -sum(1 for f in ("title", "venue_name", "price_text") if e.get(f)),
                     -int(bool(e.get("start_time_known"))),
                     e.get("posted_at") or "",

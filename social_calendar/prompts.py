@@ -7,7 +7,7 @@ bumping the gate wording must not relabel extraction output.
 Bump the relevant constant whenever that stage's prompt changes.
 """
 
-GATE_PROMPT_VERSION = "gate-v2"      # v2: sold-out / tense handling
+GATE_PROMPT_VERSION = "gate-v3"      # v3: explicit hints for pre-vision dedupe
 EXTRACT_PROMPT_VERSION = "extract-v2"   # v2: explicit category rule
 
 def version_for(stage: str) -> str:
@@ -54,7 +54,13 @@ a night", photos captioned after the fact. Selling out is not the same as being 
 over.
 
 When a caption is ambiguous, lean TRUE — the extraction stage downstream can \
-discard it, but anything rejected here is never seen again.\
+discard it, but anything rejected here is never seen again.
+
+When the caption explicitly states an event title or headliner, date, venue, or \
+event/ticket URL, return those as matching hints. Resolve relative dates against \
+the publication date included with the caption and use ISO 8601. Use null for \
+anything that is not explicit; these hints can cause the flyer image to be \
+skipped, so a guess is worse than a missing value.\
 """
 
 GATE_SCHEMA = {
@@ -65,8 +71,16 @@ GATE_SCHEMA = {
             "type": "string",
             "description": "One short sentence justifying the call.",
         },
+        "title_hint": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "starts_at_hint": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "description": "ISO 8601 date or datetime, only when explicit.",
+        },
+        "venue_hint": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "event_url_hint": {"anyOf": [{"type": "string"}, {"type": "null"}]},
     },
-    "required": ["is_event_candidate", "reason"],
+    "required": ["is_event_candidate", "reason", "title_hint", "starts_at_hint",
+                 "venue_hint", "event_url_hint"],
     "additionalProperties": False,
 }
 

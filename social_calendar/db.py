@@ -83,6 +83,53 @@ CREATE TABLE IF NOT EXISTS event (
 CREATE INDEX IF NOT EXISTS ix_event_starts ON event(starts_at);
 CREATE INDEX IF NOT EXISTS ix_event_group  ON event(dedupe_group);
 
+-- User-managed website calendars. Website entries are mutable snapshots rather
+-- than immutable social posts, so their fetch state and stable external IDs
+-- live separately even though a compatibility source_post row lets them reuse
+-- the existing event, dedupe, geocode, UI, and export paths.
+CREATE TABLE IF NOT EXISTS web_source (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL,
+    url             TEXT NOT NULL UNIQUE,
+    linked_handle   TEXT,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    format          TEXT,
+    etag            TEXT,
+    last_modified   TEXT,
+    last_checked_at TEXT,
+    last_success_at TEXT,
+    last_error      TEXT,
+    added_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS web_item (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id    INTEGER NOT NULL REFERENCES web_source(id),
+    external_id  TEXT NOT NULL,
+    post_id      TEXT NOT NULL UNIQUE REFERENCES source_post(post_id),
+    event_id     INTEGER NOT NULL REFERENCES event(id),
+    content_hash TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at  TEXT NOT NULL,
+    UNIQUE(source_id, external_id)
+);
+CREATE INDEX IF NOT EXISTS ix_web_item_source ON web_item(source_id);
+
+-- One displayed event may be supported by a venue website, the venue's own
+-- Instagram post, and several reposts. Keeping those references independently
+-- lets dedupe collapse records without losing provenance.
+CREATE TABLE IF NOT EXISTS event_source (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id       INTEGER NOT NULL REFERENCES event(id),
+    source_kind    TEXT NOT NULL,          -- instagram | website
+    source_item_id TEXT NOT NULL,
+    permalink      TEXT,
+    match_method   TEXT NOT NULL,          -- extracted | structured | caption
+    created_at     TEXT NOT NULL,
+    UNIQUE(source_kind, source_item_id)
+);
+CREATE INDEX IF NOT EXISTS ix_event_source_event ON event_source(event_id);
+
 -- Geocoded venues. Small table -- ~15 rows -- populated once via Nominatim.
 CREATE TABLE IF NOT EXISTS venue (
     venue_key    TEXT PRIMARY KEY,   -- normalized key from dedupe.normalize_venue
@@ -158,6 +205,18 @@ def connect(path: Path | str = DB_PATH) -> sqlite3.Connection:
         except sqlite3.OperationalError as exc:
             if "duplicate column" not in str(exc):
                 raise
+    # Existing installs predate event_source. Backfill once so their source
+    # counts and future cross-source matches work without re-extraction.
+    if (conn.execute("SELECT COUNT(*) FROM event_source").fetchone()[0] == 0
+            and conn.execute("SELECT 1 FROM event LIMIT 1").fetchone()):
+        conn.execute(
+            "INSERT OR IGNORE INTO event_source "
+            "(event_id, source_kind, source_item_id, permalink, match_method, created_at) "
+            "SELECT e.id, CASE WHEN p.source_name='apify' THEN 'instagram' ELSE p.source_name END, "
+            "p.post_id, p.permalink, 'extracted', e.created_at "
+            "FROM event e JOIN source_post p ON p.post_id=e.post_id "
+            "WHERE e.occurrence_of IS NULL")
+        conn.commit()
     # Anything already in the poll rotation is approved by definition. Check
     # before writing -- this runs on EVERY connection, and an unconditional
     # UPDATE made read-only page loads contend for the write lock.

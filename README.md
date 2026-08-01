@@ -33,7 +33,8 @@ InstaCalendar reads those posts for you and drops everything onto a nice clean e
 
 - 🎛️ **Filterssss.** Zero in by event type, venue, neighborhood, IG account, upcoming dates, or distance.
 - ✅ **Confirm the good ones.** Come back later and pull up your shortlist.
-- 🌞 **Wake up to fresh events.** The app checks for new posts once a day, even with its window closed.
+- 🌐 **Follow venue calendars too.** Add an events page or calendar feed even when it has no Instagram account.
+- 🌞 **Wake up to fresh events.** The app checks every source once a day, even with its window closed.
 - 📱 **Take it to your phone.** Subscribe to any filtered calendar from the app.
 - 🏠 **Keep it on your Mac.** Your calendar stays on your computer. No account, server, or telemetry.
 - 🫵 **You get the last word.** Confirm, hide, or flag any event. AI still needs an editor.
@@ -41,14 +42,19 @@ InstaCalendar reads those posts for you and drops everything onto a nice clean e
 
 ## How it works
 
-You pick the accounts worth watching: venues, local acts, even your friends' accounts. 
-Once a day the app checks for new posts (as long as it's running in your menu bar).
+You pick the Instagram accounts and website calendars worth watching. Once a day
+the app checks every source (as long as it's running in your menu bar).
+
+Website events published as iCalendar or schema.org structured data go straight
+into the calendar without an AI call. When a later Instagram caption clearly
+identifies one of those events, the post is attached as another source and its
+flyer does not need to be processed again.
 
 Most posts are not events. A cheap first pass reads each caption and throws those out. 
 Actual event posts get passed to a model that **reads the flyer image**, where the date, 
 the set times and the lineup usually live. 
 
-Then it dedupes events in case the same one's been listed before. It looks up
+Then it dedupes events across Instagram and websites. It looks up
 where the venue actually is and drops anything not in your city. It even works out
 which nights "every Thursday" covers.
 
@@ -81,8 +87,9 @@ xattr -dr com.apple.quarantine "/Applications/Instagram Calendar.app"
 [Apify](https://console.apify.com/settings/integrations) to fetch the posts. Both
 take about a minute to sign up for.
 
-**4. Pick some accounts.** Click **accounts** in the top right, then paste in
-profile URLs or approve the suggestions. Nothing gets fetched until you say so.
+**4. Pick some sources.** Click **sources** in the top right, then paste in
+Instagram profile URLs, approve suggestions, or add venue event pages and `.ics`
+feeds. Nothing gets fetched until you say so.
 
 That's it. A small calendar icon sits in your menu bar, the app runs itself once
 a day, and you can open the calendar whenever you want.
@@ -92,6 +99,9 @@ a day, and you can open the calendar whenever you want.
 Two APIs charge per use: Apify to fetch the posts, OpenAI to read them. Both
 bill per post, so the bill follows how many accounts you watch and not anything
 you do in the app.
+
+Structured website calendars do not use either API. They add ordinary page
+requests but no metered scraping or model cost.
 
 | Accounts you follow | Roughly per month |
 |---|---|
@@ -137,8 +147,9 @@ set, so you can subscribe to just music in one neighborhood and still browse
 everything on your Mac.
 
 **Impatient?** Every account has a **fetch it now** button that polls just that
-one, and there is a refresh-all for the whole rotation. Both tell you the cost
-before they spend anything.
+one, every website has its own refresh button, and there is a refresh-all for the
+whole rotation. Paid Instagram actions show their estimated cost first; structured
+website fetches are direct and free.
 
 **Interested, hide, flag.** Every event has three buttons. The model is good, not
 perfect, and you are the last word on what stays.

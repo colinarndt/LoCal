@@ -1,6 +1,6 @@
 <!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Discover · Social Calendar</title>
+<title>Sources · Social Calendar</title>
 <style>
  :root{--bg:#fbfaf8;--card:#fff;--ink:#1a1a1a;--muted:#6b6b6b;--line:#e5e2dd;--accent:#b4593a;}
  @media (prefers-color-scheme:dark){:root{--bg:#16161a;--card:#1f1f24;--ink:#ececee;
@@ -31,8 +31,10 @@
  .av.ph{display:inline-flex;align-items:center;justify-content:center;
    color:var(--muted);font-weight:600;font-size:1.1rem}
  .add{display:flex;gap:8px;margin:14px 0 6px}
- .add input{flex:1;font:inherit;padding:8px 11px;border-radius:8px;border:1px solid var(--line);
+ .add input{flex:1;min-width:150px;font:inherit;padding:8px 11px;border-radius:8px;border:1px solid var(--line);
    background:var(--card);color:var(--ink)}
+ .webadd{flex-wrap:wrap}.webadd input[name=url]{flex:2;min-width:260px}
+ .source-actions{display:flex;gap:5px;align-items:center}
  .msg{font-size:.85rem;color:var(--accent);margin:4px 0}
  .msg.warn{color:#c0392b}
  .sechead{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
@@ -58,7 +60,7 @@
  .job.done .spin,.job.err .spin{display:none}
  @keyframes sp{to{transform:rotate(360deg)}}
 </style></head><body><div class="wrap">
-<header><h1>Discover accounts</h1><a href="/">← calendar</a></header>
+<header><h1>Sources</h1><a href="/">← calendar</a></header>
 
 <form class="add" method="post" action="/discover/add">
   <input name="handle" placeholder="type an @account or paste a profile URL"
@@ -80,6 +82,9 @@
   <p class="msg">Approved @{{ approved }} — polled on the next scheduled run.
     {{ fetch_button(approved, 'or fetch it now') }}</p>
 {% endif %}
+{% if website_added %}
+  <p class="msg">Website added. Fetch it now to verify that it exposes a supported calendar.</p>
+{% endif %}
 {% if err == 'busy' %}
   <p class="msg warn">A fetch is already running — one at a time.</p>
 {% elif err == 'no-keys' %}
@@ -87,7 +92,9 @@
     <code>python -m social_calendar.cli init</code>, or check
     <a href="/settings">settings</a>.</p>
 {% elif err == 'nothing-polled' %}
-  <p class="msg warn">Nothing is in the rotation yet — approve an account first.</p>
+  <p class="msg warn">Nothing is in the rotation yet — add an account or website first.</p>
+{% elif err == 'bad-website' %}
+  <p class="msg warn">That does not look like a valid website URL.</p>
 {% elif err %}
   <p class="msg warn">That does not look like a valid Instagram handle.</p>
 {% endif %}
@@ -100,13 +107,13 @@
 <div class="sechead">
   <p class="lead">{{ polled|length }} account{{ '' if polled|length == 1 else 's' }} currently
     in the poll rotation.</p>
-{% if polled %}
+{% if polled or website_sources %}
   {# One button for the whole rotation: the window is per-account and incremental,
      so this is the same work the nightly run-once does, on demand. #}
   <form method="post" action="/discover/fetch-all" class="fetchf"
-        onsubmit="return confirm('Refresh all {{ polled|length }} polled account{{ '' if polled|length == 1 else 's' }}?\n\nFetches only posts since each account was last polled — up to ${{ '%.2f'|format(fetch_all_cost) }} of scraping if every account hits its {{ fetch_limit }}-post cap, plus model calls on whatever is new.')">
+        onsubmit="return confirm('Refresh {{ polled|length }} Instagram account{{ '' if polled|length == 1 else 's' }} and {{ website_sources|length }} website{{ '' if website_sources|length == 1 else 's' }}?\n\nWebsite calendars are fetched directly. Instagram may cost up to ${{ '%.2f'|format(fetch_all_cost) }} for scraping, plus model calls on new unmatched posts.')">
     <button class="ok" type="submit" {{ 'disabled' if job['state'] == 'running' }}
-            >&#8635; check for new posts</button></form>
+            >&#8635; check all sources</button></form>
 {% endif %}
 </div>
 <div class="plist">
@@ -121,6 +128,39 @@
     <p class="empty">Nothing in the rotation yet.</p>
   {% endfor %}
 </div>
+<h2>Website calendars</h2>
+<p class="lead">Paste a venue’s events page or calendar feed. Structured iCalendar and
+  schema.org event data are imported directly, without image processing. Linking an
+  Instagram handle helps keep the source relationship visible.</p>
+<form class="add webadd" method="post" action="/discover/website/add">
+  <input name="url" type="url" placeholder="events page or .ics URL" required>
+  <input name="name" placeholder="name (optional)">
+  <input name="linked_handle" placeholder="@account (optional)"
+         autocapitalize="none" autocorrect="off" spellcheck="false">
+  <button class="ok" type="submit">add website</button>
+</form>
+{% for source in website_sources %}
+  <div class="c">
+    <div>
+      <div class="h"><a href="{{ source['url'] }}" target="_blank" rel="noopener">{{ source['name'] }}</a>
+        {% if source['format'] %}<span class="n">{{ source['format'] }}</span>{% endif %}
+      </div>
+      <div class="handle">{{ source['url'] }}{% if source['linked_handle'] %}
+        · linked to @{{ source['linked_handle'] }}{% endif %}</div>
+      {% if source['last_error'] %}<div class="why">{{ source['last_error'] }}</div>
+      {% elif source['last_success_at'] %}<div class="why">last checked {{ source['last_success_at'][:16]|replace('T', ' ') }}</div>
+      {% else %}<div class="why">not checked yet</div>{% endif %}
+    </div>
+    <div class="source-actions">
+      <form method="post" action="/discover/website/{{ source['id'] }}/fetch" class="fetchf">
+        <button type="submit" {{ 'disabled' if job['state'] == 'running' }}>fetch now</button></form>
+      <form method="post" action="/discover/website/{{ source['id'] }}/disable">
+        <button type="submit" title="stop following">stop</button></form>
+    </div>
+  </div>
+{% else %}
+  <p class="empty">No website calendars yet.</p>
+{% endfor %}
 <h2>Suggested accounts</h2>
 <p class="lead">
   Accounts appearing on posts we already scrape, ranked by how many real events they produced.
@@ -156,9 +196,8 @@
 {% else %}
   <p class="empty">No candidates awaiting review.</p>
 {% endfor %}
-<footer>Approved accounts are written to the database, not to accounts.txt —
-  <code>run-once</code> reads the rotation from there. A scheduled run polls
-  everything; "fetch now" polls one account so you can see it work immediately.</footer>
+<footer>Instagram accounts and websites are stored in the database. A scheduled run checks
+  everything; an individual “fetch now” checks only that source and any website linked to it.</footer>
 </div>
 <script>
 // Poll the one job slot. A fetch runs for minutes (scrape + a vision call per

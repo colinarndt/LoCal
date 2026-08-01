@@ -52,6 +52,13 @@ def test_missing_keys_refuse_before_the_slot_is_claimed():
     assert web.JOB["state"] == "idle"
 
 
+def test_website_only_fetch_needs_no_api_keys():
+    os.environ.pop("OPENAI_API_KEY")
+    os.environ.pop("APIFY_TOKEN")
+    assert web.start_fetch([], "website", [3]) is None
+    assert web.JOB["state"] == "running"
+
+
 def test_a_single_handle_is_recorded_for_the_progress_banner():
     web.start_fetch(["venue"], "@venue")
     assert web.JOB["handle"] == "venue"

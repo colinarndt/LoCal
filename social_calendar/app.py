@@ -213,12 +213,15 @@ class AppDelegate(NSObject):
                 totals = spend.totals(conn)
                 last = scheduler.describe(conn)
                 polled = len(discovery.approved_handles(conn))
+                websites = conn.execute(
+                    "SELECT COUNT(*) FROM web_source WHERE enabled=1").fetchone()[0]
         except Exception as exc:
             return [f"database unavailable: {type(exc).__name__}"]
 
-        lines = [f"Last run: {last}", f"Watching {polled} accounts"]
+        lines = [f"Last run: {last}",
+                 f"Watching {polled} accounts, {websites} websites"]
 
-        absent = missing_keys()
+        absent = missing_keys() if polled else []
         if absent:
             # Named rather than just counted: "set your API keys" sends someone
             # to check both when only one is actually missing.
@@ -429,11 +432,13 @@ class AppDelegate(NSObject):
     def _start_run(self, reason: str) -> None:
         with db.session(web.app.config["DB"]) as conn:
             handles = discovery.approved_handles(conn)
-        if not handles:
-            # fetch_recent([]) still bills a run, so never start an empty one.
-            print("no approved accounts; nothing to fetch", file=sys.stderr)
+            website_ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM web_source WHERE enabled=1 ORDER BY id")]
+        if not handles and not website_ids:
+            print("no followed sources; nothing to fetch", file=sys.stderr)
             return
-        err = web.start_fetch(handles, f"{len(handles)} accounts ({reason})")
+        label = f"{len(handles)} accounts, {len(website_ids)} websites ({reason})"
+        err = web.start_fetch(handles, label, website_ids)
         if err:
             print(f"fetch not started: {err}", file=sys.stderr)
 

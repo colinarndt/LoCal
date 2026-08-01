@@ -104,8 +104,8 @@ def process(conn: sqlite3.Connection, extractor, limit: int | None = None) -> di
         q += f" LIMIT {int(limit)}"
     rows = conn.execute(q).fetchall()
 
-    stats = {"seen": len(rows), "gated_out": 0, "gate_skipped": 0, "events": 0,
-             "errors": 0, "flagged": 0}
+    stats = {"seen": len(rows), "gated_out": 0, "gate_skipped": 0,
+             "vision_skipped": 0, "events": 0, "errors": 0, "flagged": 0}
     for i, row in enumerate(rows, 1):
         post = _post_dict(row)
         # Commit per post. Holding one transaction across hundreds of model calls
@@ -125,12 +125,27 @@ def process(conn: sqlite3.Connection, extractor, limit: int | None = None) -> di
             stats["gate_skipped"] += 1
         else:
             gate = extractor.gate(post)
-            _record(conn, post["post_id"], "gate", extractor.model, gate)
+            gate_model = (extractor.model_for("gate") if hasattr(extractor, "model_for")
+                          else extractor.model)
+            _record(conn, post["post_id"], "gate", gate_model, gate)
             if "_error" in gate:
                 stats["errors"] += 1
                 continue
             if not gate.get("is_event_candidate"):
                 stats["gated_out"] += 1
+                continue
+
+            # Structured calendars and earlier posts may already identify this
+            # event. Only explicit caption hints can skip the flyer; ambiguous
+            # announcements continue to vision exactly as before.
+            match = _caption_match(conn, gate)
+            if match is not None:
+                _record(conn, post["post_id"], "prematch", extractor.model, {
+                    "event_id": match["id"], "reason": match["reason"],
+                    "title": match["title"], "starts_at": match["starts_at"],
+                })
+                _attach_source(conn, match["id"], post, "caption")
+                stats["vision_skipped"] += 1
                 continue
 
         out = extractor.extract(post)
@@ -155,7 +170,7 @@ def _insert_event(conn: sqlite3.Connection, post: dict, extraction_id: int,
         "posted_at": post.get("posted_at"),
         "date_reasoning": out.get("date_reasoning"),
     })
-    conn.execute(
+    event_id = conn.execute(
         "INSERT INTO event (post_id, extraction_id, title, starts_at, start_time_known, "
         "venue_name, venue_key, category, price_text, confidence, date_reasoning, "
         "needs_review, review_reason, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -163,9 +178,75 @@ def _insert_event(conn: sqlite3.Connection, post: dict, extraction_id: int,
          int(bool(out.get("start_time_known"))), out.get("venue_name"),
          dedupe.normalize_venue(out.get("venue_name")), out.get("category"),
          out.get("price_text"), out.get("confidence"), out.get("date_reasoning"),
-         int(flagged), reason, _now()))
+         int(flagged), reason, _now())).lastrowid
+    _attach_source(conn, event_id, post, "extracted")
     stats["events"] += 1
     stats["flagged"] += int(flagged)
+
+
+def _attach_source(conn: sqlite3.Connection, event_id: int, post: dict,
+                   method: str) -> None:
+    kind = "website" if post.get("source_name") == "website" else "instagram"
+    conn.execute(
+        "INSERT OR IGNORE INTO event_source (event_id,source_kind,source_item_id,"
+        "permalink,match_method,created_at) VALUES (?,?,?,?,?,?)",
+        (event_id, kind, post["post_id"], post.get("permalink"), method, _now()))
+
+
+def _caption_match(conn: sqlite3.Connection, gate: dict) -> dict | None:
+    """Find an existing event only when the caption makes identity explicit.
+
+    False matches silently discard flyer information, so this is intentionally
+    stricter than final dedupe. An exact source URL is sufficient. Otherwise an
+    exact day, a strong title, and a complete stored venue are all required.
+    """
+    hinted_url = (gate.get("event_url_hint") or "").strip().rstrip("/")
+    if hinted_url:
+        row = conn.execute(
+            "SELECT e.id,e.title,e.starts_at,'exact event URL' AS reason FROM event e "
+            "JOIN event_source es ON es.event_id=e.id "
+            "WHERE e.is_canonical=1 AND rtrim(es.permalink,'/')=? LIMIT 1",
+            (hinted_url,)).fetchone()
+        if row:
+            return dict(row)
+
+    title = (gate.get("title_hint") or "").strip()
+    day = _iso_day(gate.get("starts_at_hint"))
+    if not title or not day:
+        return None
+    venue = dedupe.normalize_venue(gate.get("venue_hint"))
+    rows = conn.execute(
+        "SELECT id,title,starts_at,venue_name,venue_key FROM event "
+        "WHERE is_canonical=1 AND substr(starts_at,1,10)=? AND title IS NOT NULL",
+        (day,)).fetchall()
+    matches = []
+    for row in rows:
+        score = dedupe.title_similarity(title, row["title"])
+        venue_agrees = bool(venue and venue == row["venue_key"])
+        threshold = 0.75 if venue_agrees else 0.90
+        if row["venue_key"] and score >= threshold:
+            matches.append((score, row, venue_agrees))
+    if not matches:
+        return None
+    matches.sort(key=lambda match: match[0], reverse=True)
+    # Same title on the same date at multiple venues is not hypothetical for
+    # touring festivals and common recurring names. Without explicit venue
+    # agreement, keep the flyer in the loop rather than selecting arbitrarily.
+    if len(matches) > 1 and not matches[0][2]:
+        return None
+    score, row, venue_agrees = matches[0]
+    return {"id": row["id"], "title": row["title"], "starts_at": row["starts_at"],
+            "reason": (f"same date, {'same venue, ' if venue_agrees else ''}"
+                       f"title similarity {score:.2f}")}
+
+
+def _iso_day(value: str | None) -> str | None:
+    if not value or len(value) < 10:
+        return None
+    try:
+        return dt.date.fromisoformat(value[:10]).isoformat()
+    except ValueError:
+        return None
 
 
 # --- stage 4: dedupe --------------------------------------------------------
@@ -175,7 +256,7 @@ def rebuild_dedupe(conn: sqlite3.Connection) -> dict:
     normalizer change."""
     rows = conn.execute(
         "SELECT e.id, e.post_id, e.title, e.starts_at, e.venue_name, e.price_text, "
-        "e.start_time_known, p.posted_at FROM event e "
+        "e.start_time_known, p.posted_at, p.source_name FROM event e "
         "JOIN source_post p ON p.post_id = e.post_id").fetchall()
     events = [dict(r) for r in rows]
     dedupe.group_events(events)
@@ -185,6 +266,14 @@ def rebuild_dedupe(conn: sqlite3.Connection) -> dict:
         conn.execute("UPDATE event SET dedupe_group=?, is_canonical=?, venue_key=? WHERE id=?",
                      (ev["dedupe_group"], ev["is_canonical"],
                       dedupe.normalize_venue(ev.get("venue_name")), ev["id"]))
+    # Supporting links follow the canonical event so the one displayed record
+    # retains every website and Instagram source in its group.
+    canonical = {e["dedupe_group"]: e["id"] for e in events if e["is_canonical"]}
+    for ev in events:
+        target = canonical.get(ev["dedupe_group"])
+        if target and target != ev["id"]:
+            conn.execute("UPDATE event_source SET event_id=? WHERE event_id=?",
+                         (target, ev["id"]))
     groups = {e["dedupe_group"] for e in events}
     return {"events": len(events), "groups": len(groups), "merged": len(events) - len(groups)}
 
@@ -201,7 +290,8 @@ def expand_series(conn: sqlite3.Connection, weeks: int = 8) -> dict:
         "SELECT e.id, e.title, e.venue_name, e.venue_key, e.category, e.date_reasoning, "
         "e.starts_at, e.start_time_known, e.post_id, p.posted_at, p.caption FROM event e "
         "JOIN source_post p ON p.post_id = e.post_id "
-        "WHERE e.occurrence_of IS NULL AND e.starts_at IS NOT NULL").fetchall()
+        "WHERE e.occurrence_of IS NULL AND e.starts_at IS NOT NULL "
+        "AND p.source_name != 'website'").fetchall()
 
     def _find_series(conn, title, venue_key, rule):
         """Match on venue + rule + fuzzy title -- two posts about the same

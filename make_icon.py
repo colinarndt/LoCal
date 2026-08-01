@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
+import struct
 import sys
 
 import Quartz
@@ -58,6 +58,20 @@ ROW_COUNT = 4
 ROW_W, ROW_H, ROW_GAP = 412.0, 23.0, 53.0    # the agenda rules
 ROWS_CY = 424.0                      # centre of the stack, within the date area
 FLASH = (694.0, 691.0, 27.0)         # x, y, r -- the viewfinder dot, in the header
+
+# ICNS stores PNG representations as typed chunks. Writing the small container
+# directly is more reliable than iconutil on current macOS, where iconutil can
+# reject an iconset it just exported as "Invalid Iconset". These are Apple's
+# standard PNG-backed size slots, from 16 through 1024 pixels.
+ICNS_SLOTS = [
+    (b"icp4", "icon_16x16.png"),
+    (b"icp5", "icon_32x32.png"),
+    (b"icp6", "icon_32x32@2x.png"),
+    (b"ic07", "icon_128x128.png"),
+    (b"ic08", "icon_256x256.png"),
+    (b"ic09", "icon_512x512.png"),
+    (b"ic10", "icon_512x512@2x.png"),
+]
 
 
 def _rounded(x, y, w, h, r):
@@ -137,6 +151,19 @@ def render(size: int, out: str) -> None:
         raise SystemExit(f"could not write {out}")
 
 
+def compile_icns(iconset: str, output: str) -> None:
+    chunks = []
+    for kind, name in ICNS_SLOTS:
+        with open(os.path.join(iconset, name), "rb") as fh:
+            data = fh.read()
+        chunks.append(kind + struct.pack(">I", len(data) + 8) + data)
+    payload = b"".join(chunks)
+    temp = output + ".tmp"
+    with open(temp, "wb") as fh:
+        fh.write(b"icns" + struct.pack(">I", len(payload) + 8) + payload)
+    os.replace(temp, output)
+
+
 def main() -> None:
     root = os.path.dirname(os.path.abspath(__file__))
     iconset = os.path.join(root, "AppIcon.iconset")
@@ -150,7 +177,7 @@ def main() -> None:
         render(pt * 2, os.path.join(iconset, f"icon_{pt}x{pt}@2x.png"))
 
     icns = os.path.join(root, "AppIcon.icns")
-    subprocess.run(["iconutil", "-c", "icns", iconset, "-o", icns], check=True)
+    compile_icns(iconset, icns)
     shutil.rmtree(iconset, ignore_errors=True)
     print(f"==> {icns} ({os.path.getsize(icns) // 1024}KB)")
 
