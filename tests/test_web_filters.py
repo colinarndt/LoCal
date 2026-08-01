@@ -59,6 +59,9 @@ def test_search_box_finds_an_event_by_attached_instagram_caption(tmp_path, monke
     assert b'name="q"' in by_caption.data
     assert b'value="Tennessee"' in by_caption.data
     assert by_caption.data.index(b'class="views"') < by_caption.data.index(b'class="search"')
+    assert b'>Search</button>' not in by_caption.data
+    assert b"setTimeout(refreshResults, 250)" in by_caption.data
+    assert b"activeRequest.abort()" in by_caption.data
 
 
 def test_confirm_returns_to_the_event_card(tmp_path, monkeypatch):

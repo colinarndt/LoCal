@@ -75,14 +75,15 @@
   .views a.on { background:var(--accent); border-color:transparent; color:#fff; }
   .search { margin-left:auto; display:flex; justify-content:flex-end; gap:6px;
             min-width:0; flex:1; }
-  .search input { width:min(290px,100%); min-width:0; font:inherit; padding:6px 10px;
+  .search input { width:min(360px,100%); min-width:0; font:inherit; padding:6px 10px;
                   border-radius:7px; border:1px solid var(--line);
                   background:var(--card); color:var(--ink); }
   .search input:focus { outline:2px solid color-mix(in srgb, var(--accent) 45%, transparent);
                         border-color:var(--accent); }
-  .search button { font-size:.85rem; }
   .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px;
              overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+  #results { transition:opacity .12s; }
+  #results.loading { opacity:.55; }
 
   .mnav { display:flex; align-items:center; gap:14px; margin:18px 0 10px; }
   .mnav strong { font-size:1.05rem; }
@@ -185,7 +186,7 @@
     <span class="brand-name">InstaCalendar</span></h1>
   <span class="count">
     {# calendar totals cover the whole grid, spill days included -- not just the month #}
-    {{ total }} event{{ '' if total == 1 else 's' }}{% if view == 'calendar' %}<span class="inview"> in view</span>{% endif %}
+    <span id="event-total">{{ total }} event{{ '' if total == 1 else 's' }}{% if view == 'calendar' %}<span class="inview"> in view</span>{% endif %}</span>
     · <a href="/discover">sources</a>
     · <a href="/settings">settings</a>
   </span>
@@ -209,8 +210,7 @@
   <div class="search" role="search">
     <label class="sr-only" for="q">Search event titles and post captions</label>
     <input type="search" id="q" name="q" form="f" value="{{ args.get('q','') }}"
-           placeholder="Search events" autocomplete="off">
-    <button type="submit" form="f">Search</button>
+           placeholder="Search events" autocomplete="off" aria-controls="results">
   </div>
 </div>
 
@@ -280,6 +280,7 @@
   </div>
 </form>
 
+<div id="results" aria-live="polite">
 {# both exports carry the current filters, so build them from the live query #}
 <p class="subline"><a href="/calendar.ics?{{ query_with(args) }}"
      title="Subscribe to this exact view -- the same filters apply">subscribe to this calendar</a>
@@ -381,6 +382,7 @@
     {% else %}Nothing matches those filters.{% endif %}
   </p>
 {% endfor %}
+</div>
 
 </div>
 <div id="lb" role="dialog" aria-modal="true">
@@ -396,13 +398,14 @@
   </div>
 </div>
 <script>
-  // Flyer lightbox -- view the poster in place rather than bouncing to Instagram.
-  (function () {
-    var lb = document.getElementById('lb'), img = lb.querySelector('img'),
-        h3 = lb.querySelector('h3'), meta = lb.querySelector('.lb-meta'),
-        cap = lb.querySelector('.lb-cap'), link = lb.querySelector('.lb-link');
-    function close() { lb.classList.remove('on'); img.src = ''; }
-    document.querySelectorAll('.thumb').forEach(function (t) {
+  var lb = document.getElementById('lb'), img = lb.querySelector('img'),
+      h3 = lb.querySelector('h3'), meta = lb.querySelector('.lb-meta'),
+      cap = lb.querySelector('.lb-cap'), link = lb.querySelector('.lb-link');
+
+  // Result cards are replaced during live search, so their behavior is bound
+  // through a reusable function after every successful result swap.
+  function bindFlyers(root) {
+    root.querySelectorAll('.thumb').forEach(function (t) {
       t.addEventListener('click', function () {
         var d = t.dataset;
         img.src = d.full;
@@ -418,32 +421,37 @@
         lb.classList.add('on');
       });
     });
-    lb.addEventListener('click', function (e) {
-      if (e.target === lb || e.target.classList.contains('x')) close();
-    });
-    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
-  })();
+  }
+
+  function closeLightbox() { lb.classList.remove('on'); img.src = ''; }
+  lb.addEventListener('click', function (e) {
+    if (e.target === lb || e.target.classList.contains('x')) closeLightbox();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeLightbox();
+  });
 
   // Confirm in place so the page stays at the exact scroll position. The form's
   // normal POST remains available as a fallback when the request cannot run.
-  document.querySelectorAll('.confirm-form').forEach(function (form) {
-    form.addEventListener('submit', async function (event) {
+  function bindConfirm(root) {
+    root.querySelectorAll('.confirm-form').forEach(function (confirmForm) {
+      confirmForm.addEventListener('submit', async function (event) {
       event.preventDefault();
-      var button = form.querySelector('button'), response;
+      var button = confirmForm.querySelector('button'), response;
       button.disabled = true;
       try {
-        response = await fetch(form.action, {
+        response = await fetch(confirmForm.action, {
           method: 'POST',
           headers: {'X-Requested-With': 'fetch'}
         });
       } catch (error) {
         button.disabled = false;
-        form.submit();
+        confirmForm.submit();
         return;
       }
       if (!response.ok) {
         button.disabled = false;
-        form.submit();
+        confirmForm.submit();
         return;
       }
 
@@ -455,7 +463,7 @@
         return;
       }
 
-      var card = form.closest('.ev'),
+      var card = confirmForm.closest('.ev'),
           meta = card.querySelector('.meta'),
           badge = card.querySelector('.confirmed-badge');
       if (data.confirmed && !badge) {
@@ -469,8 +477,61 @@
       }
       button.textContent = data.confirmed ? 'unconfirm' : 'confirm';
       button.disabled = false;
+      });
     });
-  });
+  }
+
+  function bindResults(root) {
+    bindFlyers(root);
+    bindConfirm(root);
+  }
+
+  var results = document.getElementById('results');
+  bindResults(results);
+
+  // Debounced live search. Fetch a normal server-rendered page, then swap only
+  // the result region so the search field keeps focus and typing stays fluid.
+  (function () {
+    var search = document.getElementById('q'), filterForm = document.getElementById('f'),
+        timer, activeRequest;
+
+    async function refreshResults() {
+      var params = new URLSearchParams();
+      new FormData(filterForm).forEach(function (value, key) {
+        if (value !== '') params.append(key, value);
+      });
+      var url = new URL(window.location.href);
+      url.search = params.toString();
+      url.hash = '';
+
+      if (activeRequest) activeRequest.abort();
+      activeRequest = new AbortController();
+      results.classList.add('loading');
+      try {
+        var response = await fetch(url, {signal: activeRequest.signal});
+        if (!response.ok) throw new Error('search failed');
+        var page = new DOMParser().parseFromString(await response.text(), 'text/html'),
+            nextResults = page.getElementById('results'),
+            nextTotal = page.getElementById('event-total'),
+            nextViews = page.querySelector('.views');
+        if (!nextResults || !nextTotal || !nextViews) throw new Error('invalid search response');
+        results.innerHTML = nextResults.innerHTML;
+        document.getElementById('event-total').innerHTML = nextTotal.innerHTML;
+        document.querySelector('.views').innerHTML = nextViews.innerHTML;
+        history.replaceState(null, '', url);
+        bindResults(results);
+      } catch (error) {
+        if (error.name !== 'AbortError') results.classList.remove('loading');
+        return;
+      }
+      results.classList.remove('loading');
+    }
+
+    search.addEventListener('input', function () {
+      clearTimeout(timer);
+      timer = setTimeout(refreshResults, 250);
+    });
+  })();
 
   // Pills apply on click -- no separate Filter press for the toggles.
   document.querySelectorAll('.chip input').forEach(function (el) {
