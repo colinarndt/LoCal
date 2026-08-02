@@ -25,6 +25,14 @@ def test_naive_event_time_is_already_local(monkeypatch):
     assert web.clock("2026-08-01T20:00:00") == "8pm"
 
 
+def test_list_heading_uses_weekday_names_for_the_current_calendar_week():
+    today = dt.date(2026, 8, 2)  # Sunday
+
+    assert web.day_label("2026-08-03", today) == "Monday"
+    assert web.day_label("2026-08-08", today) == "Saturday"
+    assert web.day_label("2026-08-09", today) == "Aug 9"
+
+
 def test_until_is_not_a_hidden_filter_after_date_field_removal():
     where, params = _filters(MultiDict([("when", "all"), ("until", "2026-08-01")]))
 
@@ -90,11 +98,11 @@ def test_confirm_returns_to_the_event_card(tmp_path, monkeypatch):
     with db.session(path) as conn:
         conn.execute(
             "INSERT INTO source_post "
-            "(post_id, polled_handle, posted_at, fetched_at) VALUES ('p1','venue','2026-07-29','now')"
+            "(post_id, polled_handle, posted_at, fetched_at) VALUES ('p1','venue','2099-07-29','now')"
         )
         conn.execute(
             "INSERT INTO event (post_id, title, starts_at, created_at) "
-            "VALUES ('p1','Show','2026-08-01','now')"
+            "VALUES ('p1','Show','2099-08-01','now')"
         )
 
     monkeypatch.setitem(web.app.config, "DB", str(path))
@@ -107,7 +115,7 @@ def test_confirm_returns_to_the_event_card(tmp_path, monkeypatch):
     )
 
     assert b'id="event-1"' in page.data
-    assert b'<div class="day" id="d-2026-08-01">Aug 1</div>' in page.data
+    assert b'<div class="day" id="d-2099-08-01">Aug 1</div>' in page.data
     assert b'class="confirm-form"' in page.data
     assert b"event.preventDefault()" in page.data
     assert b'/static/icon.svg' in page.data

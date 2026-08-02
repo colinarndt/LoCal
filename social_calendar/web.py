@@ -107,7 +107,17 @@ def local_stamp(value: str | None) -> str:
 
 
 def day_label(iso: str, today: dt.date) -> str:
-    """Compact local date used by list section headings."""
+    """List heading: weekday in the current Sunday-to-Saturday week, else date."""
+    try:
+        day = dt.date.fromisoformat(iso[:10])
+    except (TypeError, ValueError):
+        return short_date(iso)
+
+    # Match the calendar grid's Sunday-first week, so a Sunday through the
+    # following Saturday reads naturally as "this week" in the event list.
+    week_start = today - dt.timedelta(days=(today.weekday() + 1) % 7)
+    if week_start <= day < week_start + dt.timedelta(days=7):
+        return day.strftime("%A")
     return short_date(iso)
 
 
