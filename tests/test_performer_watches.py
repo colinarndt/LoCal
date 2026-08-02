@@ -91,6 +91,29 @@ def test_performer_watch_keeps_out_of_range_date_out_of_calendar(tmp_path, monke
     assert alerts == 0
 
 
+def test_performer_distance_uses_the_configured_city_not_a_legacy_home_zip(tmp_path, monkeypatch):
+    path = tmp_path / "calendar.db"
+    monkeypatch.setattr(websites.config, "load", lambda: {
+        "lat": 35.2271, "lon": -80.8431,
+        # These retired keys intentionally point elsewhere: they must have no effect.
+        "home_lat": 40.7128, "home_lon": -74.0060,
+    })
+    event = websites.StructuredEvent(
+        external_id="nearby", title="Nearby", starts_at="2026-08-20",
+        start_time_known=False, venue_name="Charlotte", permalink="https://events.example/nearby",
+        lat=35.2300, lon=-80.8400)
+
+    with db.session(path) as conn:
+        source = websites.add_source(
+            conn, "https://events.example/performer", "Performer",
+            source_type="performer", radius_miles=10)
+        source_row = conn.execute("SELECT * FROM web_source WHERE id=?", (source,)).fetchone()
+        in_range, distance = websites._qualify_performer(conn, source_row, event)
+
+    assert in_range is True
+    assert distance < 1
+
+
 def test_readding_performer_watch_recalculates_its_cached_radius(tmp_path, monkeypatch):
     path = tmp_path / "calendar.db"
     monkeypatch.setattr(websites.config, "load", lambda: {

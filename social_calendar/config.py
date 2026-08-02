@@ -34,12 +34,6 @@ DEFAULTS = {
     "lon": -80.8431,
     "radius_miles": 25.0,
     "timezone": "America/New_York",
-    "country": "USA",
-    # The city centre remains the fallback for existing installs. A home ZIP is
-    # more useful for touring-act alerts, where a watch can span hundreds of miles.
-    "home_zip": "",
-    "home_lat": None,
-    "home_lon": None,
     # Mac app only. Off by default: it is a menu bar app, and a Dock tile for
     # something that mostly runs a nightly job is clutter. On means a Dock icon
     # and a Cmd-Tab entry -- see `app.apply_dock_policy`.
@@ -102,7 +96,11 @@ def load(path: Path | str = CONFIG_PATH) -> dict:
     cfg = dict(DEFAULTS)
     try:
         with open(path) as fh:
-            cfg.update(json.load(fh))
+            stored = json.load(fh)
+            if isinstance(stored, dict):
+                # Discard retired settings (including the former home ZIP).
+                # Keeping them around would make a saved config misleading.
+                cfg.update({key: value for key, value in stored.items() if key in DEFAULTS})
     except (OSError, ValueError):
         pass
     if not is_valid_timezone(cfg["timezone"]):

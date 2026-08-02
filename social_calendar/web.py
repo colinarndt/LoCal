@@ -404,8 +404,6 @@ def settings():
     if request.method == "POST":
         form = request.form
         new = {"radius_miles": cfg["radius_miles"], "timezone": cfg["timezone"],
-               "country": (form.get("country") or cfg["country"]).strip(),
-               "home_zip": (form.get("home_zip") or "").strip(),
                # Unchecked boxes are simply absent from the form, so presence is
                # the value. Only the Mac app reads it.
                "show_in_dock": form.get("show_in_dock") == "on"}
@@ -429,17 +427,6 @@ def settings():
             else:
                 new["city"], (new["lat"], new["lon"]) = city, center
                 origin_changed = True
-
-        home_zip = new["home_zip"]
-        if not error and home_zip != cfg.get("home_zip", ""):
-            home = geo.geocode_zip(home_zip, new["country"], check_bounds=False) if home_zip else None
-            if home_zip and home is None:
-                error = f"Could not find ZIP code '{home_zip}'. Enter a five-digit US ZIP code."
-            elif home:
-                new["home_lat"], new["home_lon"] = home
-            else:
-                new["home_lat"], new["home_lon"] = None, None
-            origin_changed = True
 
         if not error:
             cfg = config.save(new)

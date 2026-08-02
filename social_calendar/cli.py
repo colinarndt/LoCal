@@ -83,24 +83,8 @@ def cmd_init(args) -> None:
               f"'America/Denver', not 'MDT'.")
         tz = _ask("Timezone", config.system_timezone())
 
-    country = _ask("Country, for postal-code lookups", cfg["country"])
-
-    home_zip = _ask("Home ZIP code for performer alerts (optional)", cfg.get("home_zip", ""))
-    home = None
-    if home_zip:
-        print("  looking up home ZIP...", end="", flush=True)
-        home = geo.geocode_zip(home_zip, country, check_bounds=False)
-        if home is None:
-            print(" not found; using the city centre for performer alerts.")
-            home_zip = ""
-        else:
-            print(f" {home[0]:.4f}, {home[1]:.4f}")
-
     saved = config.save({"city": city, "lat": lat, "lon": lon,
-                         "radius_miles": radius, "timezone": tz, "country": country,
-                         "home_zip": home_zip,
-                         "home_lat": home[0] if home else None,
-                         "home_lon": home[1] if home else None})
+                         "radius_miles": radius, "timezone": tz})
     print(f"\nwrote {config.CONFIG_PATH.name}: {saved['city']}, "
           f"{saved['radius_miles']:g} mi, {saved['timezone']}")
 

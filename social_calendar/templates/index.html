@@ -289,7 +289,8 @@
 {# both exports carry the current filters, so build them from the live query #}
 <p class="subline"><a href="/calendar.ics?{{ query_with(args) }}"
      title="Subscribe to this exact view -- the same filters apply">subscribe to this calendar</a>
-  · <a href="/events.csv?{{ query_with(args) }}"
+  · <a href="/events.csv?{{ query_with(args) }}" target="_blank" rel="noopener"
+       download="social-calendar.csv"
        title="Download this view as a CSV -- import it into Google Sheets, Excel or Numbers">download CSV</a></p>
 
 {% macro card(e, when_label) %}

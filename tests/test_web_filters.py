@@ -144,6 +144,26 @@ def test_event_calendar_download_contains_only_the_selected_event(tmp_path, monk
     assert b"UID:sc-1@social-calendar" in response.data
 
 
+def test_csv_link_uses_a_browser_download_instead_of_replacing_the_app_view(tmp_path, monkeypatch):
+    path = tmp_path / "calendar.db"
+    with db.session(path) as conn:
+        conn.execute(
+            "INSERT INTO source_post (post_id,polled_handle,posted_at,fetched_at) "
+            "VALUES ('p1','venue','2099-07-29','now')")
+        conn.execute(
+            "INSERT INTO event (post_id,title,starts_at,created_at) "
+            "VALUES ('p1','Show','2099-08-01','now')")
+
+    monkeypatch.setitem(web.app.config, "DB", str(path))
+    client = web.app.test_client()
+    page = client.get("/")
+    csv = client.get("/events.csv")
+
+    assert b'download="social-calendar.csv"' in page.data
+    assert b'href="/events.csv?' in page.data
+    assert csv.headers["Content-Disposition"] == "attachment; filename=social-calendar.csv"
+
+
 def test_existing_schema_all_day_span_is_repaired_when_database_opens(tmp_path):
     path = tmp_path / "calendar.db"
     with db.session(path) as conn:

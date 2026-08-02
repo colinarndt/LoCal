@@ -1261,8 +1261,7 @@ def _resolve_performer_location(conn: sqlite3.Connection, event: StructuredEvent
 def _qualify_performer(conn: sqlite3.Connection, source, event: StructuredEvent) -> tuple[bool, float | None]:
     _resolve_performer_location(conn, event)
     cfg = config.load()
-    lat0 = cfg.get("home_lat") if cfg.get("home_lat") is not None else cfg["lat"]
-    lon0 = cfg.get("home_lon") if cfg.get("home_lon") is not None else cfg["lon"]
+    lat0, lon0 = cfg["lat"], cfg["lon"]
     if event.lat is None or event.lon is None:
         return False, None
     distance = geo.haversine_miles(float(lat0), float(lon0), event.lat, event.lon)
@@ -1278,8 +1277,7 @@ def recalculate_performer(conn: sqlite3.Connection, source_id: int) -> int:
         "SELECT wi.id,wi.event_id,e.location_lat,e.location_lon FROM web_item wi "
         "JOIN event e ON e.id=wi.event_id WHERE wi.source_id=?", (source_id,)).fetchall()
     cfg = config.load()
-    lat0 = cfg.get("home_lat") if cfg.get("home_lat") is not None else cfg["lat"]
-    lon0 = cfg.get("home_lon") if cfg.get("home_lon") is not None else cfg["lon"]
+    lat0, lon0 = cfg["lat"], cfg["lon"]
     changed = 0
     for row in rows:
         if row["location_lat"] is None or row["location_lon"] is None:
