@@ -623,6 +623,20 @@ def _local_iso(value) -> tuple[str | None, bool]:
     return parsed.isoformat(timespec="seconds"), True
 
 
+def _schema_all_day_span(start_value, end_value, start: str, end: str | None) -> bool:
+    """Recognize a date-only event encoded as an inclusive full-day span.
+
+    Some CMSes serialize all-day entries as 00:00:00 through 23:59:59 instead
+    of schema.org's simpler date form. That is an availability convention, not
+    a claim that the event starts at midnight.
+    """
+    start_text, end_text = str(start_value or ""), str(end_value or "")
+    midnight = r"\d{4}-\d{2}-\d{2}T00:00:00(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
+    last_second = r"\d{4}-\d{2}-\d{2}T23:59:59(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
+    return bool(re.fullmatch(midnight, start_text) and re.fullmatch(last_second, end_text)
+                and end and start[:10] == end[:10])
+
+
 def _text(value) -> str | None:
     if isinstance(value, str):
         return html.unescape(value).strip() or None
@@ -738,6 +752,8 @@ def parse_jsonld(page: str, base_url: str) -> list[StructuredEvent]:
             if not start:
                 continue
             end, _ = _local_iso(item.get("endDate"))
+            if _schema_all_day_span(item.get("startDate"), item.get("endDate"), start, end):
+                start, end, known = start[:10], end[:10], False
             title = _text(item.get("name"))
             location = _location_fields(item.get("location"))
             venue = location["venue_name"]

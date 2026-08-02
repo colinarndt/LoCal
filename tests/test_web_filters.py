@@ -142,3 +142,23 @@ def test_event_calendar_download_contains_only_the_selected_event(tmp_path, monk
     assert b"LOCATION:Example Room" in response.data
     assert b"tickets: https://tickets.example/show" in response.data
     assert b"UID:sc-1@social-calendar" in response.data
+
+
+def test_existing_schema_all_day_span_is_repaired_when_database_opens(tmp_path):
+    path = tmp_path / "calendar.db"
+    with db.session(path) as conn:
+        conn.execute(
+            "INSERT INTO source_post (post_id,polled_handle,posted_at,raw_provider_json,source_name,fetched_at) "
+            "VALUES ('web:1','', '2026-08-01', ?, 'website', 'now')",
+            ('{"startDate": "2026-08-20T00:00:00-04:00", '
+             '"endDate": "2026-08-20T23:59:59-04:00"}',))
+        conn.execute(
+            "INSERT INTO event (post_id,title,starts_at,ends_at,start_time_known,created_at) "
+            "VALUES ('web:1','All-day event','2026-08-20T00:00:00','2026-08-20T23:59:59',1,'now')")
+
+    # Opening an existing database runs its idempotent data repair.
+    conn = db.connect(path)
+    event = conn.execute("SELECT starts_at,ends_at,start_time_known FROM event").fetchone()
+    conn.close()
+
+    assert tuple(event) == ("2026-08-20", "2026-08-20", 0)

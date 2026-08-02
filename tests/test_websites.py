@@ -133,6 +133,18 @@ def test_jsonld_event_uses_its_explicit_event_image():
     assert event.image_url == "https://images.example/tennis.webp"
 
 
+def test_jsonld_full_day_bounds_are_not_treated_as_a_midnight_start():
+    payload = event_payload("2026-08-20T00:00:00-04:00")
+    payload["endDate"] = "2026-08-20T23:59:59-04:00"
+
+    event = websites.parse_jsonld(JSONLD % json.dumps(payload),
+                                  "https://venue.example/calendar")[0]
+
+    assert event.starts_at == "2026-08-20"
+    assert event.ends_at == "2026-08-20"
+    assert event.start_time_known is False
+
+
 def test_punchup_tour_cards_preserve_venue_city_and_ticket_link():
     events = websites.parse_punchup(PUNCHUP, "https://punchup.live/timmynobrakes/tour",
                                     "Timmy No Brakes")

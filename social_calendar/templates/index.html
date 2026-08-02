@@ -305,7 +305,7 @@
       <div class="meta">
         {% if e['start_time_known'] and e['starts_at']|clock %}
           <span class="t">{{ e['starts_at']|clock }}</span>
-        {% else %}<span>time TBA</span>{% endif %}
+        {% endif %}
         {% if e['venue_name'] %}<span>{{ e['venue_name'] }}</span>{% endif %}
         {% if e['location_city'] %}<span>{{ e['location_city'] }}{% if e['location_region'] %}, {{ e['location_region'] }}{% endif %}</span>{% endif %}
         {% if e['price_text'] %}<span>{{ e['price_text'] }}</span>{% endif %}

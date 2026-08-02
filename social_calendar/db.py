@@ -239,6 +239,18 @@ MIGRATIONS = [
     "ALTER TABLE event ADD COLUMN location_lon REAL",
     "ALTER TABLE event ADD COLUMN ticket_url TEXT",
     "ALTER TABLE event ADD COLUMN ticket_status TEXT",
+    # Earlier website imports treated CMS all-day spans (00:00:00 through
+    # 23:59:59) as literal midnight events. Repair stored schema.org payloads
+    # once on open; the condition is idempotent after start_time_known is zero.
+    """UPDATE event SET starts_at=substr(starts_at,1,10), ends_at=substr(starts_at,1,10),
+       start_time_known=0
+       WHERE start_time_known=1 AND starts_at LIKE '%T00:00:00'
+       AND EXISTS (
+           SELECT 1 FROM source_post p WHERE p.post_id=event.post_id
+           AND p.source_name='website'
+           AND p.raw_provider_json LIKE '%\"startDate\": \"%T00:00:00%'
+           AND p.raw_provider_json LIKE '%\"endDate\": \"%T23:59:59%'
+       )""",
 ]
 
 
