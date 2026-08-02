@@ -73,6 +73,12 @@ CREATE TABLE IF NOT EXISTS event (
     date_reasoning TEXT,
     needs_review   INTEGER NOT NULL DEFAULT 0,   -- section 5.5 weekday flag
     review_reason  TEXT,
+    location_city  TEXT,
+    location_region TEXT,
+    location_lat   REAL,
+    location_lon   REAL,
+    ticket_url     TEXT,
+    ticket_status  TEXT,
     is_confirmed   INTEGER NOT NULL DEFAULT 0,
     is_hidden      INTEGER NOT NULL DEFAULT 0,
     occurrence_of  INTEGER REFERENCES series(id),
@@ -99,6 +105,9 @@ CREATE TABLE IF NOT EXISTS web_source (
     last_checked_at TEXT,
     last_success_at TEXT,
     last_error      TEXT,
+    source_type     TEXT NOT NULL DEFAULT 'venue', -- venue | performer
+    radius_miles    REAL,
+    notify          INTEGER NOT NULL DEFAULT 0,
     added_at        TEXT NOT NULL
 );
 
@@ -109,11 +118,36 @@ CREATE TABLE IF NOT EXISTS web_item (
     post_id      TEXT NOT NULL UNIQUE REFERENCES source_post(post_id),
     event_id     INTEGER NOT NULL REFERENCES event(id),
     content_hash TEXT NOT NULL,
+    in_range     INTEGER NOT NULL DEFAULT 1,
+    distance_miles REAL,
     first_seen_at TEXT NOT NULL,
     last_seen_at  TEXT NOT NULL,
     UNIQUE(source_id, external_id)
 );
 CREATE INDEX IF NOT EXISTS ix_web_item_source ON web_item(source_id);
+
+CREATE TABLE IF NOT EXISTS location_cache (
+    location_key TEXT PRIMARY KEY,
+    lat          REAL,
+    lon          REAL,
+    address      TEXT,
+    geocoded_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS alert_delivery (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id    INTEGER NOT NULL REFERENCES web_source(id),
+    external_id  TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    kind         TEXT NOT NULL, -- new | nearby | updated
+    title        TEXT NOT NULL,
+    body         TEXT NOT NULL,
+    ticket_url   TEXT,
+    created_at   TEXT NOT NULL,
+    delivered_at TEXT,
+    UNIQUE(source_id, external_id, content_hash, kind)
+);
+CREATE INDEX IF NOT EXISTS ix_alert_pending ON alert_delivery(delivered_at);
 
 -- Successful arbitrary-page model results are cached by sanitized page hash.
 -- Most sites also send ETag/Last-Modified, but this prevents a repeated model
@@ -194,6 +228,17 @@ MIGRATIONS = [
     "ALTER TABLE account ADD COLUMN status TEXT NOT NULL DEFAULT 'candidate'",
     "ALTER TABLE account ADD COLUMN proposed_reason TEXT",
     "ALTER TABLE account ADD COLUMN avatar_file TEXT",
+    "ALTER TABLE web_source ADD COLUMN source_type TEXT NOT NULL DEFAULT 'venue'",
+    "ALTER TABLE web_source ADD COLUMN radius_miles REAL",
+    "ALTER TABLE web_source ADD COLUMN notify INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE web_item ADD COLUMN in_range INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE web_item ADD COLUMN distance_miles REAL",
+    "ALTER TABLE event ADD COLUMN location_city TEXT",
+    "ALTER TABLE event ADD COLUMN location_region TEXT",
+    "ALTER TABLE event ADD COLUMN location_lat REAL",
+    "ALTER TABLE event ADD COLUMN location_lon REAL",
+    "ALTER TABLE event ADD COLUMN ticket_url TEXT",
+    "ALTER TABLE event ADD COLUMN ticket_status TEXT",
 ]
 
 

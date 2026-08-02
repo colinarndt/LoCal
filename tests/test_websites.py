@@ -42,6 +42,32 @@ CARBONHOUSE = """<!doctype html><html><body>
 </div>
 </body></html>"""
 
+PUNCHUP = """<!doctype html><html><body><main>
+<a href="/e/180cca11-e33f-4cb5-8126-8a4c4d93f6e6"><p>August 6, 2026</p></a>
+<a href="/e/180cca11-e33f-4cb5-8126-8a4c4d93f6e6"><p>Lexington, KY</p></a>
+<a href="/e/180cca11-e33f-4cb5-8126-8a4c4d93f6e6"><p>Thursday – 7:00 PM</p><p>Comedy Off Broadway</p></a>
+<a href="https://tickets.example/timmy">Buy Tickets</a>
+</main></body></html>"""
+
+SQUARESPACE_BANDSINTOWN = """<!doctype html><html><body>
+<div class="sqs-block-tourdates" data-block-json="&#123;&quot;artistId&quot;:&quot;Cristina Mariani&quot;,&quot;timeframe&quot;:&quot;upcoming&quot;&#125;"></div>
+<script>Static.SQUARESPACE_CONTEXT = {&quot;website&quot;:{&quot;identifier&quot;:&quot;cristinamariani&quot;}};</script>
+</body></html>"""
+
+WIDGET_BANDSINTOWN = """<!doctype html><html><body>
+<script src="https://widgetv3.bandsintown.com/main.min.js"></script>
+<a class="bit-widget-initializer" data-artist-name="id_15537640"></a>
+</body></html>"""
+
+NO_UPCOMING_DATES = """<!doctype html><html><body>
+<main><h1>Tour Dates</h1><p>No upcoming tour dates right now. Check back soon.</p></main>
+</body></html>"""
+
+RIVERSIDE_EMPTY = """<!doctype html><html><body>
+<h3><span>UPCOMING</span></h3><div class="event-list"><header>DATE</header></div></div>
+<h3>PAST</h3>
+</body></html>"""
+
 
 class Response:
     def __init__(self, body: str | bytes, url="https://venue.example/events",
@@ -95,6 +121,154 @@ def test_jsonld_music_event_is_parsed_without_a_model_call():
     assert event.permalink == "https://venue.example/events/tennis"
     assert event.price_text == "$25"
     assert event.category == "music"
+
+
+def test_jsonld_event_uses_its_explicit_event_image():
+    payload = event_payload()
+    payload["image"] = {"contentUrl": "https://images.example/tennis.webp"}
+
+    event = websites.parse_jsonld(JSONLD % json.dumps(payload),
+                                  "https://venue.example/calendar")[0]
+
+    assert event.image_url == "https://images.example/tennis.webp"
+
+
+def test_punchup_tour_cards_preserve_venue_city_and_ticket_link():
+    events = websites.parse_punchup(PUNCHUP, "https://punchup.live/timmynobrakes/tour",
+                                    "Timmy No Brakes")
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.external_id == "180cca11-e33f-4cb5-8126-8a4c4d93f6e6"
+    assert event.title == "Timmy No Brakes"
+    assert event.starts_at == "2026-08-06T19:00:00"
+    assert event.venue_name == "Comedy Off Broadway"
+    assert (event.city, event.region) == ("Lexington", "KY")
+    assert event.ticket_url == "https://tickets.example/timmy"
+    assert event.ticket_status == "tickets"
+
+
+def test_punchup_live_adapter_uses_public_show_api():
+    profile_id = "903698e7-3646-4662-9337-b0f435f5ab2e"
+    page = f'<script>self.__next_f.push([1,"{{\\"id\\":\\"{profile_id}\\",\\"slug\\":\\"timmynobrakes\\"}}"])</script>'
+    shows = json.dumps([{
+        "id": "180cca11-e33f-4cb5-8126-8a4c4d93f6e6",
+        "datetime": "2026-08-06T19:00:00",
+        "location": "Lexington, KY",
+        "venue": "Comedy Off Broadway",
+        "ticket_link": "https://tickets.example/timmy",
+        "is_sold_out": True,
+        "comedian": {"display_name": "Timmy No Brakes"},
+    }])
+
+    def opener(request, timeout=30):
+        body = shows if "/api/shows?comedianId=" in request.full_url else page
+        return Response(body, request.full_url)
+
+    events, kind, _, _ = websites.fetch_events({
+        "url": "https://punchup.live/timmynobrakes/tour", "name": "Timmy No Brakes",
+        "source_type": "performer", "etag": None, "last_modified": None,
+    }, opener=opener)
+
+    assert kind == "punchup-api"
+    assert len(events) == 1
+    assert events[0].ticket_status == "sold out"
+    assert events[0].ticket_url == "https://tickets.example/timmy"
+
+
+def test_squarespace_bandsintown_adapter_imports_tour_dates_and_ticket_status():
+    feed = json.dumps([{
+        "id": "107983153",
+        "url": "https://www.bandsintown.com/e/107983153",
+        "datetime": "2026-08-01T19:00:00",
+        "artist": {"name": "Cristina Mariani", "image_url": "https://images.example/cristina.jpg"},
+        "venue": {"name": "The Comedy Store - La Jolla", "city": "La Jolla",
+                  "region": "CA", "street_address": "916 Pearl St",
+                  "latitude": "32.840463", "longitude": "-117.2732332"},
+        "offers": [{"status": "available", "type": "Tickets",
+                    "url": "https://www.bandsintown.com/t/107983153"}],
+        "sold_out": False,
+    }])
+
+    def opener(request, timeout=30):
+        body = feed if request.full_url.startswith("https://rest.bandsintown.com/") else SQUARESPACE_BANDSINTOWN
+        return Response(body, request.full_url)
+
+    events, kind, _, _ = websites.fetch_events({
+        "url": "https://www.cristinamariani.com/home-cm", "name": "Christina Mariani",
+        "source_type": "performer", "etag": None, "last_modified": None,
+    }, opener=opener)
+
+    assert kind == "bandsintown-api"
+    assert len(events) == 1
+    event = events[0]
+    assert event.external_id == "bandsintown:107983153"
+    assert event.title == "Cristina Mariani"
+    assert event.venue_name == "The Comedy Store - La Jolla"
+    assert (event.city, event.region) == ("La Jolla", "CA")
+    assert (event.lat, event.lon) == (32.840463, -117.2732332)
+    assert event.ticket_status == "available"
+    assert event.ticket_url == "https://www.bandsintown.com/t/107983153"
+    assert event.image_url == "https://images.example/cristina.jpg"
+
+
+def test_standard_bandsintown_widget_uses_its_site_scoped_public_feed():
+    feed = json.dumps([{
+        "id": "108330615", "url": "https://www.bandsintown.com/e/108330615",
+        "datetime": "2026-08-02T19:30:00", "artist": {"name": "Angine De Poitrine"},
+        "venue": {"name": "Festivent", "city": "Levis", "region": "QC",
+                  "latitude": "46.805", "longitude": "-71.177"},
+        "offers": [], "sold_out": False,
+    }])
+
+    def opener(request, timeout=30):
+        body = feed if "/V3.1/artists/id_15537640/events" in request.full_url else WIDGET_BANDSINTOWN
+        return Response(body, request.full_url)
+
+    events, kind, _, _ = websites.fetch_events({
+        "url": "https://anginedepoitrine.com/en/pages/concerts", "name": "Angine de Poitrine",
+        "source_type": "performer", "etag": None, "last_modified": None,
+    }, opener=opener)
+
+    assert kind == "bandsintown-api"
+    assert len(events) == 1
+    assert events[0].title == "Angine De Poitrine"
+    assert events[0].external_id == "bandsintown:108330615"
+
+
+def test_web_event_image_is_stored_with_the_source_post(tmp_path, monkeypatch):
+    conn = db.connect(":memory:")
+    source_id = websites.add_source(conn, "https://venue.example/events", "Venue")
+    monkeypatch.setattr(websites, "_event_images", lambda _event: ["web-poster.jpg"])
+    event = websites.StructuredEvent(
+        external_id="poster-event", title="Poster event", starts_at="2026-08-20",
+        start_time_known=False, venue_name="Example Room", permalink="https://venue.example/show",
+        image_url="https://images.example/poster.jpg")
+
+    websites._upsert_event(conn, conn.execute("SELECT * FROM web_source WHERE id=?", (source_id,)).fetchone(),
+                           event, "2026-08-01T00:00:00+00:00")
+
+    assert conn.execute("SELECT local_images FROM source_post").fetchone()[0] == '["web-poster.jpg"]'
+
+
+def test_empty_tour_notice_is_a_successful_zero_event_response():
+    events, kind, _, _ = websites.fetch_events({
+        "url": "https://the-aristocrats.com/shows/", "name": "The Aristocrats",
+        "source_type": "performer", "etag": None, "last_modified": None,
+    }, opener=opener_for(NO_UPCOMING_DATES))
+
+    assert kind == "empty-tour-page"
+    assert events == []
+
+
+def test_riverside_empty_upcoming_table_is_a_successful_zero_event_response():
+    events, kind, _, _ = websites.fetch_events({
+        "url": "https://riversideband.pl/en/gigs", "name": "Riverside",
+        "source_type": "performer", "etag": None, "last_modified": None,
+    }, opener=opener_for(RIVERSIDE_EMPTY))
+
+    assert kind == "riverside-events"
+    assert events == []
 
 
 def test_jsonld_event_nested_under_nonstandard_events_key_is_parsed():
@@ -214,6 +388,20 @@ def test_fetch_events_decompresses_gzip_html_before_parsing():
 
     assert kind == "html-cards"
     assert len(events) == 2
+
+
+def test_page_requests_prefer_html_over_calendar_content_negotiation():
+    seen = []
+
+    def opener(request, timeout=30):
+        seen.append(request)
+        return Response(CARBONHOUSE, request.full_url)
+
+    source = {"url": "https://www.blumenthalarts.org/events",
+              "etag": None, "last_modified": None}
+    websites.fetch_events(source, opener)
+
+    assert seen[0].get_header("Accept").startswith("text/html")
 
 
 class WebsiteExtractor:

@@ -35,6 +35,11 @@ DEFAULTS = {
     "radius_miles": 25.0,
     "timezone": "America/New_York",
     "country": "USA",
+    # The city centre remains the fallback for existing installs. A home ZIP is
+    # more useful for touring-act alerts, where a watch can span hundreds of miles.
+    "home_zip": "",
+    "home_lat": None,
+    "home_lon": None,
     # Mac app only. Off by default: it is a menu bar app, and a Dock tile for
     # something that mostly runs a nightly job is clutter. On means a Dock icon
     # and a Cmd-Tab entry -- see `app.apply_dock_policy`.

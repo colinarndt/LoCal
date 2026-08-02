@@ -19,6 +19,7 @@ import datetime as dt
 import sqlite3
 
 DEFAULT_INTERVAL_HOURS = 24
+PERFORMER_INTERVAL_HOURS = 6
 
 # How often the app wakes to re-evaluate. Short enough that a laptop opened
 # mid-morning starts its run promptly, long enough to be free.
@@ -41,7 +42,7 @@ def last_poll(conn: sqlite3.Connection) -> dt.datetime | None:
     try:
         web = conn.execute(
             "SELECT MAX(last_checked_at) FROM web_source "
-            "WHERE enabled=1 AND last_checked_at IS NOT NULL").fetchone()
+            "WHERE enabled=1 AND source_type!='performer' AND last_checked_at IS NOT NULL").fetchone()
         if web and web[0]:
             marks.append(web[0])
     except sqlite3.OperationalError:
@@ -81,6 +82,26 @@ def due(conn: sqlite3.Connection, interval_hours: float = DEFAULT_INTERVAL_HOURS
     if elapsed is None:
         return False
     return elapsed >= interval_hours
+
+
+def due_performer_source_ids(conn: sqlite3.Connection,
+                             interval_hours: float = PERFORMER_INTERVAL_HOURS,
+                             now: dt.datetime | None = None) -> list[int]:
+    """Enabled performer pages that have had a successful check and are due again."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    rows = conn.execute(
+        "SELECT id,last_checked_at FROM web_source WHERE enabled=1 "
+        "AND source_type='performer' AND last_checked_at IS NOT NULL").fetchall()
+    due_ids = []
+    for row in rows:
+        try:
+            mark = dt.datetime.fromisoformat(row["last_checked_at"])
+            mark = mark if mark.tzinfo else mark.replace(tzinfo=dt.timezone.utc)
+        except ValueError:
+            continue
+        if (now - mark).total_seconds() >= interval_hours * 3600:
+            due_ids.append(row["id"])
+    return due_ids
 
 
 def describe(conn: sqlite3.Connection, now: dt.datetime | None = None) -> str:

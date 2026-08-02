@@ -113,7 +113,28 @@ def geocode_venue(name: str, city: str | None = None, pause: float = 1.1) -> dic
     }
 
 
-def geocode_zip(zipcode: str, country: str | None = None, pause: float = 1.1) -> tuple[float, float] | None:
+def geocode_place(query: str, pause: float = 1.1) -> dict | None:
+    """Resolve a touring-event venue without applying the local-metro guard."""
+    if not (query or "").strip():
+        return None
+    try:
+        results = _get({"q": query, "format": "json", "limit": 1,
+                        "addressdetails": 1})
+    except Exception:
+        return None
+    finally:
+        time.sleep(pause)
+    if not results:
+        return None
+    r = results[0]
+    addr = r.get("address") or {}
+    hood = next((addr[k] for k in _HOOD_KEYS if addr.get(k)), None)
+    return {"lat": float(r["lat"]), "lon": float(r["lon"]),
+            "neighborhood": hood, "address": r.get("display_name")}
+
+
+def geocode_zip(zipcode: str, country: str | None = None, pause: float = 1.1,
+                check_bounds: bool = True) -> tuple[float, float] | None:
     """Centroid of a postal code, for radius search."""
     zipcode = (zipcode or "").strip()
     if not zipcode.isdigit() or len(zipcode) != 5:
@@ -129,7 +150,7 @@ def geocode_zip(zipcode: str, country: str | None = None, pause: float = 1.1) ->
     if not results:
         return None
     lat, lon = float(results[0]["lat"]), float(results[0]["lon"])
-    if not in_bounds(lat, lon):
+    if check_bounds and not in_bounds(lat, lon):
         # A valid zip somewhere else entirely (99999 resolves to Ohio). Treating
         # it as "not found" surfaces a warning instead of an unexplained empty page.
         return None

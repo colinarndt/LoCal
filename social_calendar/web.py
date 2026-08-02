@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 from flask import (Flask, Response, abort, redirect, render_template, request,
                    send_from_directory, url_for)
 
-from . import config, db, discovery, geo, paths, runner, spend, websites
+from . import config, db, discovery, geo, notifications, paths, runner, spend, websites
 
 # Only so /settings can report whether a key is present. Values are never
 # rendered, logged, or accepted over HTTP -- see the note above that route.
@@ -161,6 +161,21 @@ app.jinja_env.globals["query_with"] = query_with
 def _filters(args) -> tuple[str, list]:
     """Build the WHERE clause shared by the HTML view and the ICS feed."""
     where = ["e.is_canonical = 1", "e.is_hidden = 0", "e.starts_at IS NOT NULL"]
+    # Tour dates stay cached so a radius edit can take effect without another
+    # fetch, but they enter the calendar only when at least one performer watch
+    # qualifies them. Local sources and Instagram retain their normal behavior.
+    where.append(
+        "(NOT EXISTS (SELECT 1 FROM event_source pes JOIN web_item pwi "
+        "ON pwi.post_id=pes.source_item_id JOIN web_source pws ON pws.id=pwi.source_id "
+        "WHERE pes.event_id=e.id AND pws.source_type='performer') OR "
+        "EXISTS (SELECT 1 FROM event_source pes JOIN web_item pwi "
+        "ON pwi.post_id=pes.source_item_id JOIN web_source pws ON pws.id=pwi.source_id "
+        "WHERE pes.event_id=e.id AND pws.source_type='performer' AND pwi.in_range=1) OR "
+        "EXISTS (SELECT 1 FROM event_source ies WHERE ies.event_id=e.id "
+        "AND ies.source_kind='instagram') OR "
+        "EXISTS (SELECT 1 FROM event_source wes JOIN web_item wwi "
+        "ON wwi.post_id=wes.source_item_id JOIN web_source wws ON wws.id=wwi.source_id "
+        "WHERE wes.event_id=e.id AND wws.source_type!='performer'))")
     params: list = []
 
     if args.getlist("category"):
@@ -216,6 +231,8 @@ def _filters(args) -> tuple[str, list]:
 BASE_SELECT = """
 SELECT e.id, e.title, e.starts_at, e.start_time_known, e.venue_name, e.venue_key,
        e.category, e.price_text, e.needs_review, e.review_reason, e.is_confirmed,
+       e.location_city, e.location_region, e.location_lat, e.location_lon,
+       e.ticket_url, e.ticket_status,
        e.occurrence_of, e.dedupe_group, p.permalink, p.polled_handle,
        p.attributed_handle,
        COALESCE(NULLIF(p.local_images,'[]'),
@@ -224,6 +241,11 @@ SELECT e.id, e.title, e.starts_at, e.start_time_known, e.venue_name, e.venue_key
           WHERE ies.event_id=e.id AND ip.local_images!='[]' LIMIT 1), '[]') AS local_images,
        p.caption, p.posted_at,
        v.neighborhood, v.lat, v.lon, v.address,
+       (SELECT MIN(pwi.distance_miles) FROM event_source pes
+        JOIN web_item pwi ON pwi.post_id=pes.source_item_id
+        JOIN web_source pws ON pws.id=pwi.source_id
+        WHERE pes.event_id=e.id AND pws.source_type='performer' AND pwi.in_range=1)
+         AS performer_distance,
        (SELECT COUNT(*) FROM event_source es WHERE es.event_id = e.id) AS source_count
 FROM event e LEFT JOIN source_post p ON p.post_id = e.post_id
               LEFT JOIN venue v ON v.venue_key = e.venue_key
@@ -258,9 +280,11 @@ def _rows(conn, args):
     out = []
     for r in rows:
         d = dict(r)
-        if d["lat"] is None:
-            continue  # no coordinates -- cannot honour a radius, so exclude
-        d["distance"] = geo.haversine_miles(lat0, lon0, d["lat"], d["lon"])
+        point_lat = d["location_lat"] if d["location_lat"] is not None else d["lat"]
+        point_lon = d["location_lon"] if d["location_lon"] is not None else d["lon"]
+        if point_lat is None or point_lon is None:
+            continue
+        d["distance"] = geo.haversine_miles(lat0, lon0, point_lat, point_lon)
         if d["distance"] <= miles:
             out.append(d)
     return out
@@ -375,11 +399,13 @@ def settings():
 
     cfg = config.load()
     error = saved = None
+    origin_changed = False
 
     if request.method == "POST":
         form = request.form
         new = {"radius_miles": cfg["radius_miles"], "timezone": cfg["timezone"],
                "country": (form.get("country") or cfg["country"]).strip(),
+               "home_zip": (form.get("home_zip") or "").strip(),
                # Unchecked boxes are simply absent from the form, so presence is
                # the value. Only the Mac app reads it.
                "show_in_dock": form.get("show_in_dock") == "on"}
@@ -402,10 +428,27 @@ def settings():
                 error = f"Could not find '{city}'. Add a state or country and try again."
             else:
                 new["city"], (new["lat"], new["lon"]) = city, center
+                origin_changed = True
+
+        home_zip = new["home_zip"]
+        if not error and home_zip != cfg.get("home_zip", ""):
+            home = geo.geocode_zip(home_zip, new["country"], check_bounds=False) if home_zip else None
+            if home_zip and home is None:
+                error = f"Could not find ZIP code '{home_zip}'. Enter a five-digit US ZIP code."
+            elif home:
+                new["home_lat"], new["home_lon"] = home
+            else:
+                new["home_lat"], new["home_lon"] = None, None
+            origin_changed = True
 
         if not error:
             cfg = config.save(new)
             _ZIP_CACHE.clear()   # radius/centre changed -- stale hits would lie
+            if origin_changed:
+                with db.session(app.config["DB"]) as conn:
+                    for row in conn.execute(
+                            "SELECT id FROM web_source WHERE source_type='performer'").fetchall():
+                        websites.recalculate_performer(conn, row["id"])
             saved = True
 
     return render_template(
@@ -457,11 +500,13 @@ def _fetch_worker(handles: list[str], website_source_ids: list[int],
             stats = runner.poll(conn, source, extractor, handles, limit,
                                 groups=groups, log=progress,
                                 website_source_ids=website_source_ids)
+            delivered = notifications.deliver_pending(conn)
         website_stats = stats["websites"]
         message = (f"{website_stats['new']} website events, "
                    f"{stats['ingested']} new posts, "
                    f"{stats['processed'].get('events', 0)} extracted events, "
-                   f"{stats['processed'].get('vision_skipped', 0)} flyers skipped")
+                   f"{stats['processed'].get('vision_skipped', 0)} flyers skipped"
+                   + (f", {delivered} alert{'s' if delivered != 1 else ''}" if delivered else ""))
         if website_stats["errors"]:
             details = "; ".join(website_stats.get("error_messages", []))
             if not handles and website_stats["errors"] == website_stats["sources"]:
@@ -583,11 +628,18 @@ def discover():
             "SELECT handle, display_name, avatar_file FROM account WHERE is_polled=1 "
             "ORDER BY handle").fetchall()
         website_sources = conn.execute(
-            "SELECT * FROM web_source WHERE enabled=1 ORDER BY name").fetchall()
+            "SELECT * FROM web_source WHERE enabled=1 AND source_type='venue' ORDER BY name").fetchall()
+        performer_sources = conn.execute(
+            "SELECT ws.*, COUNT(wi.id) AS tour_dates, "
+            "SUM(CASE WHEN wi.in_range=1 THEN 1 ELSE 0 END) AS nearby_dates "
+            "FROM web_source ws LEFT JOIN web_item wi ON wi.source_id=ws.id "
+            "WHERE ws.enabled=1 AND ws.source_type='performer' GROUP BY ws.id ORDER BY ws.name").fetchall()
         return render_template("discover.html", queue=discovery.pending(conn),
                                polled=polled, added=request.args.get("added"),
                                website_sources=website_sources,
+                               performer_sources=performer_sources,
                                website_added=request.args.get("website_added"),
+                               performer_added=request.args.get("performer_added"),
                                approved=request.args.get("approved"),
                                err=request.args.get("err"), job=job,
                                fetch_limit=FETCH_LIMIT,
@@ -631,6 +683,20 @@ def add_website():
     return redirect(url_for("discover", website_added=source_id))
 
 
+@app.post("/discover/performer/add")
+def add_performer():
+    try:
+        radius = float(request.form.get("radius_miles") or 250)
+        with db.session(app.config["DB"]) as conn:
+            source_id = websites.add_source(
+                conn, request.form.get("url") or "", request.form.get("name"),
+                source_type="performer", radius_miles=radius,
+                notify=request.form.get("notify") == "on")
+    except (TypeError, ValueError):
+        return redirect(url_for("discover", err="bad-performer"))
+    return redirect(url_for("discover", performer_added=source_id))
+
+
 @app.post("/discover/website/<int:source_id>/disable")
 def disable_website(source_id: int):
     with db.session(app.config["DB"]) as conn:
@@ -672,13 +738,10 @@ def _fold(line: str) -> str:
     return "\r\n".join(out)
 
 
-@app.route("/calendar.ics")
-def calendar_ics():
-    with db.session(app.config["DB"]) as conn:
-        rows = _rows(conn, request.args)
-
+def _ics_document(rows, calendar_name: str) -> str:
+    """Build one valid calendar file for either the whole view or one event."""
     lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//social-calendar//EN",
-             "CALSCALE:GREGORIAN", "X-WR-CALNAME:Social Calendar"]
+             "CALSCALE:GREGORIAN", f"X-WR-CALNAME:{_ics_escape(calendar_name)}"]
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
     tz = config.load()["timezone"]
@@ -695,6 +758,7 @@ def calendar_ics():
 
         desc = " | ".join(x for x in [
             r["price_text"],
+            "tickets: " + r["ticket_url"] if r["ticket_url"] else None,
             f"source: @{r['attributed_handle']}" if r["attributed_handle"] else None,
             r["permalink"],
             "NEEDS REVIEW: " + (r["review_reason"] or "") if r["needs_review"] else None,
@@ -716,9 +780,28 @@ def calendar_ics():
             "END:VEVENT",
         ]
     lines.append("END:VCALENDAR")
+    return "\r\n".join(lines) + "\r\n"
 
-    return Response("\r\n".join(lines) + "\r\n", mimetype="text/calendar",
+
+@app.route("/calendar.ics")
+def calendar_ics():
+    with db.session(app.config["DB"]) as conn:
+        rows = _rows(conn, request.args)
+
+    return Response(_ics_document(rows, "Social Calendar"), mimetype="text/calendar",
                     headers={"Content-Disposition": "inline; filename=social-calendar.ics"})
+
+
+@app.route("/event/<int:event_id>/calendar.ics")
+def event_ics(event_id: int):
+    """Download one listing as a calendar event without subscribing to the whole feed."""
+    with db.session(app.config["DB"]) as conn:
+        row = conn.execute(f"{BASE_SELECT} WHERE e.id=?", (event_id,)).fetchone()
+    if row is None:
+        abort(404)
+    title = row["title"] or "Event"
+    return Response(_ics_document([row], title), mimetype="text/calendar",
+                    headers={"Content-Disposition": f"attachment; filename=event-{event_id}.ics"})
 
 
 CSV_COLUMNS = ["date", "time", "title", "venue", "neighborhood", "address",

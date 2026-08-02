@@ -76,6 +76,13 @@
       match and dropped — same city name, different state.</div>
   </div>
   <div class="field">
+    <label for="home_zip">Home ZIP code</label>
+    <input type="text" id="home_zip" name="home_zip" inputmode="numeric" pattern="[0-9]{5}"
+           maxlength="5" value="{{ cfg.get('home_zip','') }}" placeholder="28202">
+    <div class="hint">Used as the starting point for performer-watch distances. Leave it blank
+      to use the city centre above.</div>
+  </div>
+  <div class="field">
     <label for="timezone">Timezone</label>
     <input type="text" id="timezone" name="timezone" value="{{ cfg['timezone'] }}"
            placeholder="America/New_York">

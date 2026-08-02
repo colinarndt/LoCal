@@ -139,6 +139,11 @@
 
   .actions button { font-size:.8rem; padding:4px 10px; }
   .actions form { display:inline; }
+  .icon-action { width:30px; height:29px; display:inline-flex; align-items:center;
+                 justify-content:center; color:var(--ink); background:var(--bg);
+                 border:1px solid var(--line); border-radius:7px; text-decoration:none; }
+  .icon-action:hover { color:var(--accent); border-color:var(--accent); }
+  .icon-action svg { width:16px; height:16px; }
   .empty { text-align:center; color:var(--muted); padding:48px 0; }
   .date-distance { font-size:.85rem; color:var(--muted); }
   .dist { display:inline-flex; flex-wrap:wrap; gap:6px; align-items:center; }
@@ -302,20 +307,32 @@
           <span class="t">{{ e['starts_at']|clock }}</span>
         {% else %}<span>time TBA</span>{% endif %}
         {% if e['venue_name'] %}<span>{{ e['venue_name'] }}</span>{% endif %}
+        {% if e['location_city'] %}<span>{{ e['location_city'] }}{% if e['location_region'] %}, {{ e['location_region'] }}{% endif %}</span>{% endif %}
         {% if e['price_text'] %}<span>{{ e['price_text'] }}</span>{% endif %}
         {% if e['neighborhood'] %}<span class="badge hood">{{ e['neighborhood'] }}</span>{% endif %}
         {% if e['distance'] is defined %}
           <span class="badge">{{ '%.1f'|format(e['distance']) }} mi</span>{% endif %}
+        {% if e['performer_distance'] is not none %}
+          <span class="badge">{{ '%.1f'|format(e['performer_distance']) }} mi away</span>{% endif %}
+        {% if e['ticket_status'] %}<span class="badge">{{ e['ticket_status'] }}</span>{% endif %}
         {% if e['category'] %}<span class="badge">{{ e['category'] }}</span>{% endif %}
         {% if e['occurrence_of'] %}<span class="badge">recurring</span>{% endif %}
         {% if e['source_count'] > 1 %}
           <span class="badge">{{ e['source_count'] }} sources</span>{% endif %}
-        {% if e['is_confirmed'] %}<span class="badge confirmed-badge">✓ confirmed</span>{% endif %}
       </div>
       {% if e['needs_review'] %}
         <div class="review-note">{{ e['review_reason'] or 'flagged' }}</div>
       {% endif %}
       <div class="actions">
+        {% if e['ticket_url'] %}
+          <a href="{{ e['ticket_url'] }}" target="_blank" rel="noopener"><button type="button">buy tickets</button></a>
+        {% endif %}
+        <a class="icon-action" href="/event/{{ e['id'] }}/calendar.ics" target="_blank" rel="noopener"
+           title="add this event to calendar" aria-label="add this event to calendar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <rect x="3" y="5" width="18" height="16" rx="2"></rect><path d="M7 3v4M17 3v4M3 10h18M12 14v5M9.5 16.5h5"></path>
+          </svg>
+        </a>
         <form class="confirm-form" method="post" action="/event/{{ e['id'] }}/confirm">
           <button type="submit">{{ 'unconfirm' if e['is_confirmed'] else 'confirm' }}</button></form>
         <form method="post" action="/event/{{ e['id'] }}/hide">

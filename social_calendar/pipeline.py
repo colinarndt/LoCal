@@ -274,6 +274,17 @@ def rebuild_dedupe(conn: sqlite3.Connection) -> dict:
         if target and target != ev["id"]:
             conn.execute("UPDATE event_source SET event_id=? WHERE event_id=?",
                          (target, ev["id"]))
+    # Website snapshots retain their original event id between polls. Point them
+    # at the canonical row after each rebuild so performer visibility and future
+    # source updates follow the one event the calendar displays.
+    try:
+        conn.execute(
+            "UPDATE web_item SET event_id=(SELECT es.event_id FROM event_source es "
+            "WHERE es.source_kind='website' AND es.source_item_id=web_item.post_id) "
+            "WHERE EXISTS (SELECT 1 FROM event_source es WHERE es.source_kind='website' "
+            "AND es.source_item_id=web_item.post_id)")
+    except sqlite3.OperationalError:
+        pass  # pre-website schemas used by a few focused unit tests
     groups = {e["dedupe_group"] for e in events}
     return {"events": len(events), "groups": len(groups), "merged": len(events) - len(groups)}
 

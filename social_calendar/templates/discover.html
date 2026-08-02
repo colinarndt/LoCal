@@ -85,6 +85,9 @@
 {% if website_added %}
   <p class="msg">Website added. Fetch it now to verify that it exposes a supported calendar.</p>
 {% endif %}
+{% if performer_added %}
+  <p class="msg">Performer watch added. Fetch it now to find nearby tour dates.</p>
+{% endif %}
 {% if err == 'busy' %}
   <p class="msg warn">A fetch is already running — one at a time.</p>
 {% elif err == 'no-keys' %}
@@ -95,6 +98,8 @@
   <p class="msg warn">Nothing is in the rotation yet — add an account or website first.</p>
 {% elif err == 'bad-website' %}
   <p class="msg warn">That does not look like a valid website URL.</p>
+{% elif err == 'bad-performer' %}
+  <p class="msg warn">Add a valid tour page and a distance between 1 and 1,000 miles.</p>
 {% elif err %}
   <p class="msg warn">That does not look like a valid Instagram handle.</p>
 {% endif %}
@@ -107,11 +112,11 @@
 <div class="sechead">
   <p class="lead">{{ polled|length }} account{{ '' if polled|length == 1 else 's' }} currently
     in the poll rotation.</p>
-{% if polled or website_sources %}
+{% if polled or website_sources or performer_sources %}
   {# One button for the whole rotation: the window is per-account and incremental,
      so this is the same work the nightly run-once does, on demand. #}
   <form method="post" action="/discover/fetch-all" class="fetchf"
-        onsubmit="return confirm('Refresh {{ polled|length }} Instagram account{{ '' if polled|length == 1 else 's' }} and {{ website_sources|length }} website{{ '' if website_sources|length == 1 else 's' }}?\n\nWebsite calendars are fetched directly. Instagram may cost up to ${{ '%.2f'|format(fetch_all_cost) }} for scraping, plus model calls on new unmatched posts.')">
+        onsubmit="return confirm('Refresh {{ polled|length }} Instagram account{{ '' if polled|length == 1 else 's' }}, {{ website_sources|length }} website{{ '' if website_sources|length == 1 else 's' }}, and {{ performer_sources|length }} performer watch{{ '' if performer_sources|length == 1 else 'es' }}?\n\nWebsite calendars are fetched directly. Instagram may cost up to ${{ '%.2f'|format(fetch_all_cost) }} for scraping, plus model calls on new unmatched posts.')">
     <button class="ok" type="submit" {{ 'disabled' if job['state'] == 'running' }}
             >&#8635; check all sources</button></form>
 {% endif %}
@@ -160,6 +165,37 @@
   </div>
 {% else %}
   <p class="empty">No website calendars yet.</p>
+{% endfor %}
+<h2>Performer watches</h2>
+<p class="lead">Follow an act’s national tour page. Only dates inside that watch’s distance
+  limit appear in your calendar. A ticket button appears when the source provides one.</p>
+<form class="add webadd" method="post" action="/discover/performer/add">
+  <input name="url" type="url" placeholder="performer tour page" required>
+  <input name="name" placeholder="performer or act" required>
+  <input name="radius_miles" type="number" min="1" max="1000" value="250" title="distance in miles">
+  <label class="handle"><input name="notify" type="checkbox" checked> macOS alerts</label>
+  <button class="ok" type="submit">follow performer</button>
+</form>
+{% for source in performer_sources %}
+  <div class="c">
+    <div>
+      <div class="h"><a href="{{ source['url'] }}" target="_blank" rel="noopener">{{ source['name'] }}</a>
+        <span class="n">{{ source['radius_miles']|round|int }} mi</span>
+        {% if source['notify'] %}<span class="n">alerts on</span>{% endif %}</div>
+      <div class="handle">{{ source['nearby_dates'] or 0 }} nearby of {{ source['tour_dates'] }} tour dates</div>
+      {% if source['last_error'] %}<div class="why">{{ source['last_error'] }}</div>
+      {% elif source['last_success_at'] %}<div class="why">last checked {{ source['last_success_at']|local_stamp }}</div>
+      {% else %}<div class="why">not checked yet</div>{% endif %}
+    </div>
+    <div class="source-actions">
+      <form method="post" action="/discover/website/{{ source['id'] }}/fetch" class="fetchf">
+        <button type="submit" {{ 'disabled' if job['state'] == 'running' }}>fetch now</button></form>
+      <form method="post" action="/discover/website/{{ source['id'] }}/disable">
+        <button type="submit" title="stop following">stop</button></form>
+    </div>
+  </div>
+{% else %}
+  <p class="empty">No performer watches yet.</p>
 {% endfor %}
 <h2>Suggested accounts</h2>
 <p class="lead">

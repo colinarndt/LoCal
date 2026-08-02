@@ -23,10 +23,11 @@ import zlib
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
-from . import config, dedupe
+from . import config, dedupe, geo, notifications, paths
 
 MAX_BYTES = 10 * 1024 * 1024
 MAX_MODEL_CHARS = 300_000
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
 USER_AGENT = "SocialCalendar/0.1 (+local personal calendar)"
 
 
@@ -44,6 +45,14 @@ class StructuredEvent:
     description: str = ""
     raw: dict | None = None
     confidence: float = 1.0
+    city: str | None = None
+    region: str | None = None
+    address: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+    ticket_url: str | None = None
+    ticket_status: str | None = None
+    image_url: str | None = None
 
 
 def _now() -> str:
@@ -66,19 +75,29 @@ def normalize_url(value: str) -> str:
 
 
 def add_source(conn: sqlite3.Connection, url: str, name: str | None = None,
-               linked_handle: str | None = None) -> int:
+               linked_handle: str | None = None, source_type: str = "venue",
+               radius_miles: float | None = None, notify: bool = False) -> int:
     url = normalize_url(url)
     label = (name or "").strip() or urllib.parse.urlsplit(url).netloc.removeprefix("www.")
     handle = (linked_handle or "").strip().lstrip("@") or None
+    if source_type not in ("venue", "performer"):
+        raise ValueError("unknown source type")
+    if radius_miles is not None and not (1 <= float(radius_miles) <= 1000):
+        raise ValueError("radius must be between 1 and 1000 miles")
     existing = conn.execute("SELECT id FROM web_source WHERE url=?", (url,)).fetchone()
     if existing:
         conn.execute(
-            "UPDATE web_source SET name=?, linked_handle=?, enabled=1 WHERE id=?",
-            (label, handle, existing["id"]))
+            "UPDATE web_source SET name=?, linked_handle=?, source_type=?, radius_miles=?, "
+            "notify=?, enabled=1 WHERE id=?",
+            (label, handle, source_type, radius_miles, int(notify), existing["id"]))
+        if source_type == "performer":
+            recalculate_performer(conn, existing["id"])
         return existing["id"]
     return conn.execute(
-        "INSERT INTO web_source (name,url,linked_handle,enabled,added_at) "
-        "VALUES (?,?,?,1,?)", (label, url, handle, _now())).lastrowid
+        "INSERT INTO web_source "
+        "(name,url,linked_handle,source_type,radius_miles,notify,enabled,added_at) "
+        "VALUES (?,?,?,?,?,?,1,?)",
+        (label, url, handle, source_type, radius_miles, int(notify), _now())).lastrowid
 
 
 class _StructuredHTML(HTMLParser):
@@ -257,6 +276,317 @@ def parse_event_cards(page: str, base_url: str) -> list[StructuredEvent]:
     return _disambiguate_occurrences(parser.events)
 
 
+class _LinkHTML(HTMLParser):
+    """Small ordered-link reader for Punchup's server-rendered tour cards."""
+
+    def __init__(self, base_url: str):
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.links: list[tuple[str, str]] = []
+        self._href: str | None = None
+        self._depth = 0
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() == "a" and self._href is None:
+            href = dict(attrs).get("href")
+            if href:
+                self._href = urllib.parse.urljoin(self.base_url, href)
+                self._depth = 1
+                self._parts = []
+                return
+        if self._href is not None:
+            self._depth += 1
+
+    def handle_data(self, data):
+        if self._href is not None:
+            self._parts.append(data)
+
+    def handle_endtag(self, tag):
+        if self._href is None:
+            return
+        self._depth -= 1
+        if self._depth == 0:
+            text = " ".join("".join(self._parts).split())
+            self.links.append((self._href, text))
+            self._href, self._parts = None, []
+
+
+_PUNCHUP_EVENT = re.compile(r"/e/([0-9a-f-]{20,})$")
+_PUNCHUP_DAY = re.compile(r"\b(" + "|".join(_MONTHS) + r")\s+(\d{1,2})(?:,?\s+(\d{4}))?\b", re.I)
+_PUNCHUP_CITY = re.compile(r"^(.+?),\s*([A-Z]{2})$")
+_PUNCHUP_TIME = re.compile(r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*[–-]\s*"
+                           r"(\d{1,2}:\d{2}\s*(?:AM|PM))\s*(.*)$", re.I)
+
+
+def _punchup_date(text: str) -> str | None:
+    match = _PUNCHUP_DAY.search(text or "")
+    if not match:
+        return None
+    month, day, year = match.groups()
+    now = dt.datetime.now(config.tzinfo()).date()
+    candidate = dt.date(int(year or now.year), _MONTHS[month.lower()], int(day))
+    if year is None and candidate < now - dt.timedelta(days=30):
+        candidate = candidate.replace(year=candidate.year + 1)
+    return candidate.isoformat()
+
+
+def _punchup_time(text: str) -> tuple[str | None, str]:
+    match = _PUNCHUP_TIME.search(text or "")
+    if not match:
+        return None, ""
+    try:
+        clock = dt.datetime.strptime(match.group(1).upper().replace(" ", ""), "%I:%M%p").time()
+    except ValueError:
+        return None, match.group(2).strip()
+    return clock.strftime("%H:%M:%S"), match.group(2).strip()
+
+
+def _dedupe_tail(value: str) -> str:
+    words = value.split()
+    if len(words) >= 2 and len(words) % 2 == 0:
+        half = len(words) // 2
+        if words[:half] == words[half:]:
+            return " ".join(words[:half])
+    return value
+
+
+def parse_punchup(page: str, base_url: str,
+                  performer_name: str | None = None) -> list[StructuredEvent]:
+    """Read Punchup's ordered tour links without opening ticket-provider URLs."""
+    parser = _LinkHTML(base_url)
+    parser.feed(page)
+    cards: dict[str, dict] = {}
+    order: list[str] = []
+    current: str | None = None
+    for href, text in parser.links:
+        match = _PUNCHUP_EVENT.search(urllib.parse.urlsplit(href).path)
+        if match:
+            external_id = match.group(1)
+            if external_id not in cards:
+                cards[external_id] = {"url": href, "parts": []}
+                order.append(external_id)
+            cards[external_id]["parts"].append(text)
+            current = external_id
+        elif current and text.casefold() == "buy tickets":
+            cards[current]["ticket_url"] = href
+
+    events: list[StructuredEvent] = []
+    for external_id in order:
+        card = cards[external_id]
+        parts = [part for part in card["parts"] if part]
+        date_text = next((part for part in parts if _punchup_date(part)), "")
+        start_day = _punchup_date(date_text)
+        city_text = next((part for part in parts if _PUNCHUP_CITY.match(part)), "")
+        city_match = _PUNCHUP_CITY.match(city_text)
+        timed = next((part for part in parts if _PUNCHUP_TIME.search(part)), "")
+        clock, venue = _punchup_time(timed)
+        if not start_day or not city_match or not venue:
+            continue
+        city, region = city_match.groups()
+        starts = f"{start_day}T{clock}" if clock else start_day
+        events.append(StructuredEvent(
+            external_id=external_id, title=performer_name, starts_at=starts,
+            start_time_known=bool(clock), venue_name=_dedupe_tail(venue),
+            permalink=card["url"], category="comedy", city=city, region=region,
+            ticket_url=card.get("ticket_url"),
+            ticket_status="tickets" if card.get("ticket_url") else None,
+            raw={"parser": "punchup", "city": city, "region": region},
+        ))
+    return _disambiguate_occurrences(events)
+
+
+_PUNCHUP_PROFILE = re.compile(
+    r'\\"id\\":\\"([0-9a-f-]{36})\\".*?\\"slug\\":\\"([^\\"]+)\\"', re.S)
+
+
+def _punchup_profile_id(page: str, url: str) -> str | None:
+    slug = urllib.parse.urlsplit(url).path.strip("/").split("/", 1)[0]
+    for profile_id, profile_slug in _PUNCHUP_PROFILE.findall(page):
+        if profile_slug == slug:
+            return profile_id
+    return None
+
+
+def parse_punchup_api(body: str, base_url: str,
+                      performer_name: str | None = None) -> list[StructuredEvent]:
+    """Turn Punchup's public show JSON into ordinary structured events."""
+    try:
+        shows = json.loads(body)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(shows, list):
+        return []
+    out = []
+    for show in shows:
+        if not isinstance(show, dict) or not show.get("id"):
+            continue
+        starts, known = _local_iso(show.get("datetime"))
+        if not starts:
+            continue
+        location = str(show.get("location") or "").strip()
+        city_match = _PUNCHUP_CITY.match(location)
+        city, region = city_match.groups() if city_match else (location or None, None)
+        ticket_url = _text(show.get("ticket_link"))
+        sold_out = bool(show.get("is_sold_out"))
+        comedian = show.get("comedian") if isinstance(show.get("comedian"), dict) else {}
+        title = (_text(show.get("title")) or _text(comedian.get("display_name"))
+                 or performer_name)
+        out.append(StructuredEvent(
+            external_id=str(show["id"]), title=title, starts_at=starts,
+            start_time_known=known, venue_name=_text(show.get("venue")),
+            permalink=urllib.parse.urljoin(base_url, f"/e/{show['id']}"),
+            category="comedy", city=city, region=region,
+            ticket_url=ticket_url,
+            ticket_status="sold out" if sold_out else ("tickets" if ticket_url else None),
+            raw={"parser": "punchup-api", "show": show},
+        ))
+    return _disambiguate_occurrences(out)
+
+
+_BANDSINTOWN_ARTIST_ID = re.compile(r'"artistId"\s*:\s*"([^"\\]+)"')
+_SQUARESPACE_IDENTIFIER = re.compile(r'"identifier"\s*:\s*"([a-z0-9-]+)"', re.I)
+_BANDSINTOWN_WIDGET_ARTIST = re.compile(
+    r'data-artist-name\s*=\s*["\']([^"\']+)["\']', re.I)
+_BANDSINTOWN_WIDGET_APP = re.compile(
+    r'data-app-id\s*=\s*["\']([^"\']+)["\']', re.I)
+_RIVERSIDE_UPCOMING = re.compile(
+    r'<span>\s*UPCOMING\s*</span>.*?<div class="event-list">(.*?)</div>\s*</div>.*?'
+    r'<h3[^>]*>.*?\bPAST\b', re.I | re.S)
+_RIVERSIDE_EVENT = re.compile(
+    r'<div class="item-show\s+rs_event_details">(.*?)</div>\s*</li>', re.I | re.S)
+
+
+def _bandsintown_config(page: str) -> tuple[str, str] | None:
+    """Find a Squarespace Tour Dates block and its Bandsintown app id.
+
+    Squarespace renders the public event list in the browser, but leaves the
+    artist identifier in the page's ``data-block-json``. Its registered
+    Bandsintown application name is derived from the site's identifier, which
+    lets us use the same public feed the embedded widget uses.
+    """
+    decoded = html.unescape(page)
+    artist = _BANDSINTOWN_ARTIST_ID.search(decoded)
+    site = _SQUARESPACE_IDENTIFIER.search(decoded)
+    if not (artist and site):
+        return None
+    return artist.group(1), f"squarespace-{site.group(1)}"
+
+
+def _bandsintown_widget_config(page: str, page_url: str) -> tuple[str, str] | None:
+    """Read a standard Bandsintown v3 widget embedded by a performer site."""
+    if "widgetv3.bandsintown.com" not in page.casefold():
+        return None
+    decoded = html.unescape(page)
+    artist = _BANDSINTOWN_WIDGET_ARTIST.search(decoded)
+    if not artist:
+        return None
+    app = _BANDSINTOWN_WIDGET_APP.search(decoded)
+    hostname = urllib.parse.urlsplit(page_url).hostname
+    if not (app or hostname):
+        return None
+    return artist.group(1), (app.group(1) if app else f"js_{hostname}")
+
+
+def _is_bandsintown_event_list(body: str) -> bool:
+    try:
+        return isinstance(json.loads(body), list)
+    except (TypeError, ValueError):
+        return False
+
+
+def _html_text(value: str) -> str:
+    return " ".join(re.sub(r"<[^>]+>", " ", html.unescape(value)).split())
+
+
+def parse_riverside_events(page: str, base_url: str,
+                           performer_name: str | None = None) -> tuple[bool, list[StructuredEvent]]:
+    """Read Riverside's RSEventsPro Upcoming table, including its empty state."""
+    section = _RIVERSIDE_UPCOMING.search(page)
+    if not section:
+        return False, []
+    events: list[StructuredEvent] = []
+    for card in _RIVERSIDE_EVENT.findall(section.group(1)):
+        def field(name: str) -> str:
+            match = re.search(r'<li[^>]*class="[^"]*\b' + name + r'\b[^"]*"[^>]*>(.*?)</li>',
+                              card, re.I | re.S)
+            return _html_text(match.group(1)) if match else ""
+
+        date_text = field("show-date")
+        date_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", date_text)
+        if not date_match:
+            continue
+        venue = field("show-venue") or None
+        tour = field("show-tour")
+        ticket_match = re.search(r'<li[^>]*class="[^"]*\bshow-tix\b[^"]*"[^>]*>.*?'
+                                 r'href=["\']([^"\']+)', card, re.I | re.S)
+        ticket_url = (urllib.parse.urljoin(base_url, html.unescape(ticket_match.group(1)))
+                      if ticket_match else None)
+        starts = date_match.group(1)
+        identity = "|".join((starts, venue or "", tour))
+        events.append(StructuredEvent(
+            external_id=identity, title=performer_name, starts_at=starts,
+            start_time_known=False, venue_name=venue, permalink=base_url,
+            category="music", description=tour, ticket_url=ticket_url,
+            ticket_status="tickets" if ticket_url else None,
+            raw={"parser": "riverside-events", "date": date_text, "tour": tour},
+        ))
+    return True, _disambiguate_occurrences(events)
+
+
+def parse_bandsintown_api(body: str, performer_name: str | None = None) -> list[StructuredEvent]:
+    """Convert Bandsintown's public artist-events response to calendar events."""
+    try:
+        records = json.loads(body)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(records, list):
+        return []
+    artist_image = next((
+        _text(record.get("artist", {}).get("image_url"))
+        for record in records if isinstance(record, dict)
+        and isinstance(record.get("artist"), dict)
+        and _text(record["artist"].get("image_url"))), None)
+    out: list[StructuredEvent] = []
+    for record in records:
+        if not isinstance(record, dict) or not record.get("id"):
+            continue
+        starts, known = _local_iso(record.get("datetime") or record.get("starts_at"))
+        if not starts:
+            continue
+        venue = record.get("venue") if isinstance(record.get("venue"), dict) else {}
+        try:
+            lat = float(venue["latitude"]) if venue.get("latitude") is not None else None
+            lon = float(venue["longitude"]) if venue.get("longitude") is not None else None
+        except (TypeError, ValueError):
+            lat = lon = None
+        offers = record.get("offers") if isinstance(record.get("offers"), list) else []
+        ticket_url = next((_text(offer.get("url")) for offer in offers
+                           if isinstance(offer, dict) and _text(offer.get("url"))), None)
+        offer_status = next((str(offer.get("status") or "").replace("_", " ").lower()
+                             for offer in offers if isinstance(offer, dict)), "")
+        sold_out = bool(record.get("sold_out")) or offer_status == "sold out"
+        artist = record.get("artist") if isinstance(record.get("artist"), dict) else {}
+        title = (_text(record.get("title")) or _text(artist.get("name"))
+                 or performer_name)
+        permalink = _text(record.get("url")) or "https://www.bandsintown.com"
+        out.append(StructuredEvent(
+            external_id=f"bandsintown:{record['id']}", title=title, starts_at=starts,
+            start_time_known=known, venue_name=_text(venue.get("name")),
+            permalink=permalink, category=_category(f"{title or ''} tour"),
+            city=_text(venue.get("city")), region=_text(venue.get("region")),
+            address=_text(venue.get("street_address")), lat=lat, lon=lon,
+            ticket_url=ticket_url,
+            ticket_status="sold out" if sold_out else (offer_status or None),
+            # Bandsintown does not publish a separate show poster in its event
+            # API. Its artist image is the page's event image, so use it rather
+            # than guessing from ticket-vendor artwork.
+            image_url=_text(artist.get("image_url")) or artist_image,
+            raw={"parser": "bandsintown-api", "event": record},
+        ))
+    return _disambiguate_occurrences(out)
+
+
 def _walk_json(value):
     if isinstance(value, list):
         for item in value:
@@ -303,6 +633,17 @@ def _text(value) -> str | None:
     return None
 
 
+def _image_url(value) -> str | None:
+    """Return a directly usable image URL from schema.org's flexible shape."""
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, list):
+        return next((url for item in value if (url := _image_url(item))), None)
+    if isinstance(value, dict):
+        return _image_url(value.get("url") or value.get("contentUrl"))
+    return None
+
+
 def _price(offers) -> str | None:
     if isinstance(offers, list):
         vals = [p for p in (_price(x) for x in offers) if p]
@@ -317,6 +658,37 @@ def _price(offers) -> str | None:
     currency = str(offers.get("priceCurrency") or "").upper()
     prefix = "$" if currency == "USD" else (currency + " " if currency else "")
     return f"{prefix}{price}"
+
+
+def _offer_url(offers) -> str | None:
+    if isinstance(offers, list):
+        return next((url for item in offers if (url := _offer_url(item))), None)
+    if not isinstance(offers, dict):
+        return None
+    return _text(offers.get("url"))
+
+
+def _location_fields(location) -> dict:
+    if not isinstance(location, dict):
+        return {"venue_name": _text(location), "city": None, "region": None,
+                "address": None, "lat": None, "lon": None}
+    address = location.get("address")
+    addr = address if isinstance(address, dict) else {}
+    geo_data = location.get("geo") if isinstance(location.get("geo"), dict) else {}
+    try:
+        lat = float(geo_data.get("latitude")) if geo_data.get("latitude") is not None else None
+        lon = float(geo_data.get("longitude")) if geo_data.get("longitude") is not None else None
+    except (TypeError, ValueError):
+        lat = lon = None
+    pieces = [addr.get("streetAddress"), addr.get("addressLocality"),
+              addr.get("addressRegion"), addr.get("postalCode")]
+    return {
+        "venue_name": _text(location.get("name")) or _text(location),
+        "city": _text(addr.get("addressLocality")),
+        "region": _text(addr.get("addressRegion")),
+        "address": ", ".join(str(part) for part in pieces if part) or _text(address),
+        "lat": lat, "lon": lon,
+    }
 
 
 def _category(text: str) -> str:
@@ -367,8 +739,8 @@ def parse_jsonld(page: str, base_url: str) -> list[StructuredEvent]:
                 continue
             end, _ = _local_iso(item.get("endDate"))
             title = _text(item.get("name"))
-            location = item.get("location")
-            venue = _text(location)
+            location = _location_fields(item.get("location"))
+            venue = location["venue_name"]
             url = urllib.parse.urljoin(base_url, str(item.get("url") or item.get("@id") or base_url))
             description = _text(item.get("description")) or ""
             identity = str(item.get("@id") or item.get("url") or "")
@@ -380,7 +752,10 @@ def parse_jsonld(page: str, base_url: str) -> list[StructuredEvent]:
                 permalink=url,
                 category=_category(f"{title or ''} {description} {' '.join(_types(item))}"),
                 price_text=_price(item.get("offers")), description=description,
-                raw=item,
+                raw=item, city=location["city"], region=location["region"],
+                address=location["address"], lat=location["lat"], lon=location["lon"],
+                ticket_url=_offer_url(item.get("offers")),
+                image_url=_image_url(item.get("image")),
             ))
     return _disambiguate_occurrences(out)
 
@@ -596,7 +971,11 @@ class FetchResult:
 def _request(url: str, etag: str | None = None, modified: str | None = None,
              opener=urllib.request.urlopen, fresh: bool = False) -> tuple[bytes, dict, str]:
     headers = {"User-Agent": USER_AGENT,
-               "Accept": "text/calendar,text/html,application/xhtml+xml",
+               # Some normal web pages (including Shopify event pages) treat
+               # a calendar-first Accept header as a request for a different
+               # route and respond 404. Calendar feeds identify themselves by
+               # content type/body, so prefer ordinary HTML here.
+               "Accept": "text/html,application/xhtml+xml,text/calendar",
                "Accept-Encoding": "gzip, deflate"}
     if fresh:
         headers.update({"Cache-Control": "no-cache", "Pragma": "no-cache"})
@@ -621,11 +1000,17 @@ def _request(url: str, etag: str | None = None, modified: str | None = None,
 
 
 def _parse_response(data: bytes, headers: dict, final_url: str,
-                    opener) -> tuple[list[StructuredEvent], str, str]:
+                    opener, source=None) -> tuple[list[StructuredEvent], str, str]:
     text = data.decode("utf-8-sig", errors="replace")
     content_type = headers.get("content-type", "").lower()
     if "text/calendar" in content_type or "BEGIN:VCALENDAR" in text[:1000]:
         return parse_ics(text, final_url), "ics", final_url
+
+    source_type = source["source_type"] if source is not None and "source_type" in source.keys() else "venue"
+    if source_type == "performer" and urllib.parse.urlsplit(final_url).netloc.endswith("punchup.live"):
+        events = parse_punchup(text, final_url, source["name"])
+        if events:
+            return events, "punchup", final_url
 
     events = parse_jsonld(text, final_url)
     if events:
@@ -645,6 +1030,17 @@ def _parse_response(data: bytes, headers: dict, final_url: str,
     events = parse_event_cards(text, final_url)
     if events:
         return events, "html-cards", final_url
+    if urllib.parse.urlsplit(final_url).netloc.endswith("riversideband.pl"):
+        recognized, events = parse_riverside_events(
+            text, final_url, source["name"] if source is not None else None)
+        if recognized:
+            return events, "riverside-events", final_url
+    visible, _ = model_page_text(text, final_url)
+    if re.search(r"\bno upcoming (?:tour )?(?:dates|shows|events)\b.{0,80}"
+                 r"\bcheck back soon\b", visible, re.I | re.S):
+        # A clear no-dates notice is a successful check, not an extraction
+        # failure. It remains visible as zero tour dates in the source list.
+        return [], "empty-tour-page", final_url
     return [], "unsupported", final_url
 
 
@@ -667,11 +1063,55 @@ def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen,
             if exc.code == 304:
                 return FetchResult(None, "unchanged", {}, source["url"])
             raise
-        events, kind, parsed_url = _parse_response(data, headers, final_url, opener)
+        events, kind, parsed_url = _parse_response(data, headers, final_url, opener, source)
         if events or kind != "unsupported":
             return FetchResult(events, kind, headers, parsed_url)
 
         text = data.decode("utf-8-sig", errors="replace")
+        source_type = source["source_type"] if "source_type" in source.keys() else "venue"
+        if (source_type == "performer"
+                and urllib.parse.urlsplit(final_url).netloc.endswith("punchup.live")):
+            performer_id = _punchup_profile_id(text, final_url)
+            if performer_id:
+                api_url = (urllib.parse.urljoin(final_url, "/api/shows") + "?"
+                           + urllib.parse.urlencode({"comedianId": performer_id}))
+                api_data, _, _ = _request(api_url, opener=opener)
+                events = parse_punchup_api(
+                    api_data.decode("utf-8-sig", errors="replace"), final_url, source["name"])
+                if events:
+                    return FetchResult(events, "punchup-api", headers, final_url)
+        widget = _bandsintown_widget_config(text, final_url)
+        if widget:
+            artist, app_id = widget
+            api_url = "https://rest.bandsintown.com/V3.1/artists/" + urllib.parse.quote(
+                artist, safe="") + "/events?" + urllib.parse.urlencode({"app_id": app_id})
+            try:
+                api_data, _, _ = _request(api_url, opener=opener)
+            except (urllib.error.URLError, ValueError):
+                api_data = None
+            if api_data is not None:
+                body = api_data.decode("utf-8-sig", errors="replace")
+                if _is_bandsintown_event_list(body):
+                    name = source.get("name") if isinstance(source, dict) else source["name"]
+                    return FetchResult(parse_bandsintown_api(body, name),
+                                       "bandsintown-api", headers, final_url)
+        bandsintown = _bandsintown_config(text)
+        if bandsintown:
+            artist, app_id = bandsintown
+            api_url = "https://rest.bandsintown.com/artists/" + urllib.parse.quote(
+                artist, safe="") + "/events?" + urllib.parse.urlencode({"app_id": app_id})
+            try:
+                api_data, _, _ = _request(api_url, opener=opener)
+            except (urllib.error.URLError, ValueError):
+                # A widget can be configured with an old or private app id;
+                # retain the normal fallback path instead of failing the source.
+                api_data = None
+            if api_data is not None:
+                events = parse_bandsintown_api(
+                    api_data.decode("utf-8-sig", errors="replace"), source.get("name")
+                    if isinstance(source, dict) else source["name"])
+                if events:
+                    return FetchResult(events, "bandsintown-api", headers, final_url)
         last_headers, last_final_url, last_text = headers, final_url, text
         redirected = final_url.rstrip("/") != request_url.rstrip("/")
         incomplete = "<title" not in text.lower() or "</html>" not in text.lower()
@@ -732,12 +1172,116 @@ def _stable_post_id(source_id: int, external_id: str) -> str:
 def _event_hash(event: StructuredEvent) -> str:
     fields = [event.title, event.starts_at, event.ends_at, event.venue_name,
               event.permalink, event.category, event.price_text, event.description,
-              event.confidence]
+              event.confidence, event.city, event.region, event.address, event.lat,
+              event.lon, event.ticket_url, event.ticket_status]
+    fields.append(event.image_url)
     return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
 
 
+def _event_images(event: StructuredEvent) -> list[str]:
+    """Cache a trusted event image locally, without making image failure fatal."""
+    url = (event.image_url or "").strip()
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return []
+    digest = hashlib.sha256(url.encode()).hexdigest()[:24]
+    paths.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    existing = next(paths.MEDIA_DIR.glob(f"web-{digest}.*"), None)
+    if existing:
+        return [existing.name]
+    try:
+        request = urllib.request.Request(url, headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
+        })
+        with urllib.request.urlopen(request, timeout=20) as response:
+            content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
+            data = response.read(MAX_IMAGE_BYTES + 1)
+        if len(data) > MAX_IMAGE_BYTES or not content_type.startswith("image/"):
+            return []
+    except (OSError, urllib.error.URLError, ValueError):
+        return []
+    suffix = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+              "image/gif": ".gif", "image/avif": ".avif"}.get(content_type, ".img")
+    dest = paths.MEDIA_DIR / f"web-{digest}{suffix}"
+    try:
+        dest.write_bytes(data)
+    except OSError:
+        return []
+    return [dest.name]
+
+
+def _location_key(event: StructuredEvent) -> str:
+    return "|".join(" ".join((value or "").casefold().split()) for value in (
+        event.venue_name, event.city, event.region, event.address))
+
+
+def _resolve_performer_location(conn: sqlite3.Connection, event: StructuredEvent) -> None:
+    if event.lat is not None and event.lon is not None:
+        return
+    key = _location_key(event)
+    if not key:
+        return
+    cached = conn.execute("SELECT lat,lon,address FROM location_cache WHERE location_key=?", (key,)).fetchone()
+    if cached:
+        event.lat, event.lon = cached["lat"], cached["lon"]
+        event.address = event.address or cached["address"]
+        return
+    query = ", ".join(part for part in (event.venue_name, event.address, event.city, event.region) if part)
+    # Nominatim deliberately pauses between calls. Release the SQLite writer
+    # while it waits so a long national tour does not freeze the calendar UI.
+    conn.commit()
+    hit = geo.geocode_place(query)
+    if hit:
+        event.lat, event.lon = hit["lat"], hit["lon"]
+        event.address = event.address or hit["address"]
+    conn.execute(
+        "INSERT INTO location_cache (location_key,lat,lon,address,geocoded_at) VALUES (?,?,?,?,?) "
+        "ON CONFLICT(location_key) DO UPDATE SET lat=excluded.lat,lon=excluded.lon,"
+        "address=excluded.address,geocoded_at=excluded.geocoded_at",
+        (key, event.lat, event.lon, event.address, _now()))
+
+
+def _qualify_performer(conn: sqlite3.Connection, source, event: StructuredEvent) -> tuple[bool, float | None]:
+    _resolve_performer_location(conn, event)
+    cfg = config.load()
+    lat0 = cfg.get("home_lat") if cfg.get("home_lat") is not None else cfg["lat"]
+    lon0 = cfg.get("home_lon") if cfg.get("home_lon") is not None else cfg["lon"]
+    if event.lat is None or event.lon is None:
+        return False, None
+    distance = geo.haversine_miles(float(lat0), float(lon0), event.lat, event.lon)
+    return distance <= float(source["radius_miles"] or 250), distance
+
+
+def recalculate_performer(conn: sqlite3.Connection, source_id: int) -> int:
+    """Reapply a performer's radius to cached tour dates after an edit."""
+    source = conn.execute("SELECT * FROM web_source WHERE id=?", (source_id,)).fetchone()
+    if source is None or source["source_type"] != "performer":
+        return 0
+    rows = conn.execute(
+        "SELECT wi.id,wi.event_id,e.location_lat,e.location_lon FROM web_item wi "
+        "JOIN event e ON e.id=wi.event_id WHERE wi.source_id=?", (source_id,)).fetchall()
+    cfg = config.load()
+    lat0 = cfg.get("home_lat") if cfg.get("home_lat") is not None else cfg["lat"]
+    lon0 = cfg.get("home_lon") if cfg.get("home_lon") is not None else cfg["lon"]
+    changed = 0
+    for row in rows:
+        if row["location_lat"] is None or row["location_lon"] is None:
+            in_range, distance = 0, None
+        else:
+            distance = geo.haversine_miles(float(lat0), float(lon0),
+                                           row["location_lat"], row["location_lon"])
+            in_range = int(distance <= float(source["radius_miles"] or 250))
+        cur = conn.execute("UPDATE web_item SET in_range=?,distance_miles=? WHERE id=? "
+                           "AND (in_range!=? OR distance_miles IS NOT ?)",
+                           (in_range, distance, row["id"], in_range, distance))
+        changed += int(cur.rowcount)
+    return changed
+
+
 def _upsert_event(conn: sqlite3.Connection, source, event: StructuredEvent,
-                  seen_at: str) -> tuple[bool, bool]:
+                  seen_at: str, in_range: bool = True,
+                  distance_miles: float | None = None) -> tuple[bool, bool]:
     existing = conn.execute(
         "SELECT * FROM web_item WHERE source_id=? AND external_id=?",
         (source["id"], event.external_id)).fetchone()
@@ -748,31 +1292,39 @@ def _upsert_event(conn: sqlite3.Connection, source, event: StructuredEvent,
     is_model = (event.raw or {}).get("parser") == "nano-html"
     reasoning = ("AI extraction from visible website text" if is_model
                  else "Structured website calendar data")
+    # Performer sources cache nationwide dates, but only nearby shows are
+    # displayed. Do not download artwork for invisible events.
+    local_images = _event_images(event) if in_range else []
+    local_images_json = json.dumps(local_images)
 
     if existing:
         conn.execute(
-            "UPDATE web_item SET last_seen_at=?, content_hash=? WHERE id=?",
-            (seen_at, digest, existing["id"]))
+            "UPDATE web_item SET last_seen_at=?, content_hash=?, in_range=?, distance_miles=? WHERE id=?",
+            (seen_at, digest, int(in_range), distance_miles, existing["id"]))
         if existing["content_hash"] == digest:
             return False, False
         conn.execute(
-            "UPDATE source_post SET caption=?, permalink=?, raw_provider_json=?, fetched_at=? "
-            "WHERE post_id=?", (caption, event.permalink, raw, seen_at, post_id))
+            "UPDATE source_post SET caption=?, permalink=?, local_images=CASE WHEN ?!='[]' THEN ? "
+            "ELSE local_images END, raw_provider_json=?, fetched_at=? "
+            "WHERE post_id=?", (caption, event.permalink, local_images_json,
+                                  local_images_json, raw, seen_at, post_id))
         conn.execute(
             "UPDATE event SET title=?, starts_at=?, ends_at=?, start_time_known=?, "
             "venue_name=?, venue_key=?, category=?, price_text=?, confidence=?, "
-            "date_reasoning=? WHERE id=?",
+            "date_reasoning=?, location_city=?, location_region=?, location_lat=?, "
+            "location_lon=?, ticket_url=?, ticket_status=? WHERE id=?",
             (event.title, event.starts_at, event.ends_at, int(event.start_time_known),
              event.venue_name, dedupe.normalize_venue(event.venue_name), event.category,
-             event.price_text, event.confidence, reasoning, existing["event_id"]))
+             event.price_text, event.confidence, reasoning, event.city, event.region,
+             event.lat, event.lon, event.ticket_url, event.ticket_status, existing["event_id"]))
         return False, True
 
     conn.execute(
         "INSERT INTO source_post (post_id,polled_handle,attributed_handle,posted_at,caption,"
         "permalink,media_kind,local_images,raw_provider_json,source_name,fetched_at) "
-        "VALUES (?,?,?,?,?,?,'web_event','[]',?,'website',?)",
+        "VALUES (?,?,?,?,?,?,'web_event',?,?,'website',?)",
         (post_id, source["linked_handle"] or "", source["linked_handle"], seen_at,
-         caption, event.permalink, raw, seen_at))
+         caption, event.permalink, local_images_json, raw, seen_at))
     stage = "website" if is_model else "structured"
     prompt_version = "website-v1" if is_model else "structured-v1"
     model = (event.raw or {}).get("model", "nano") if is_model else "parser"
@@ -782,16 +1334,19 @@ def _upsert_event(conn: sqlite3.Connection, source, event: StructuredEvent,
         (post_id, stage, prompt_version, model, raw, seen_at)).lastrowid
     event_id = conn.execute(
         "INSERT INTO event (post_id,extraction_id,title,starts_at,ends_at,start_time_known,"
-        "venue_name,venue_key,category,price_text,confidence,date_reasoning,created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "venue_name,venue_key,category,price_text,confidence,date_reasoning,location_city,"
+        "location_region,location_lat,location_lon,ticket_url,ticket_status,created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (post_id, marker, event.title, event.starts_at, event.ends_at,
          int(event.start_time_known), event.venue_name,
          dedupe.normalize_venue(event.venue_name), event.category, event.price_text,
-         event.confidence, reasoning, seen_at)).lastrowid
+         event.confidence, reasoning, event.city, event.region, event.lat, event.lon,
+         event.ticket_url, event.ticket_status, seen_at)).lastrowid
     conn.execute(
-        "INSERT INTO web_item (source_id,external_id,post_id,event_id,content_hash,"
-        "first_seen_at,last_seen_at) VALUES (?,?,?,?,?,?,?)",
-        (source["id"], event.external_id, post_id, event_id, digest, seen_at, seen_at))
+        "INSERT INTO web_item (source_id,external_id,post_id,event_id,content_hash,in_range,"
+        "distance_miles,first_seen_at,last_seen_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (source["id"], event.external_id, post_id, event_id, digest, int(in_range),
+         distance_miles, seen_at, seen_at))
     conn.execute(
         "INSERT OR IGNORE INTO event_source (event_id,source_kind,source_item_id,permalink,"
         "match_method,created_at) VALUES (?,'website',?,?,?,?)",
@@ -832,18 +1387,34 @@ def poll_source(conn: sqlite3.Connection, source_id: int,
                       if extractor is None else "; AI fallback found no verifiable events")
             raise ValueError(
                 "no iCalendar, schema.org Event, or supported event cards found" + suffix)
-        made = updated = 0
+        made = updated = alerts = 0
         for event in events:
-            is_new, changed = _upsert_event(conn, source, event, checked)
+            performer = source["source_type"] == "performer"
+            in_range, distance = (_qualify_performer(conn, source, event) if performer
+                                  else (True, None))
+            before = conn.execute(
+                "SELECT in_range FROM web_item WHERE source_id=? AND external_id=?",
+                (source_id, event.external_id)).fetchone()
+            is_new, changed = _upsert_event(conn, source, event, checked, in_range, distance)
             made += int(is_new)
             updated += int(changed)
+            if performer and source["notify"] and in_range and (is_new or changed or not before or not before["in_range"]):
+                item = conn.execute(
+                    "SELECT content_hash FROM web_item WHERE source_id=? AND external_id=?",
+                    (source_id, event.external_id)).fetchone()
+                alert_kind = "new" if is_new else ("nearby" if before and not before["in_range"] else "updated")
+                where = ", ".join(part for part in (event.venue_name, event.city, event.region) if part)
+                when = event.starts_at[:10]
+                alerts += int(notifications.enqueue(
+                    conn, source_id, event.external_id, item["content_hash"], alert_kind,
+                    event.title or source["name"], f"{when} · {where}", event.ticket_url or event.permalink))
         conn.execute(
             "UPDATE web_source SET format=?,etag=?,last_modified=?,last_checked_at=?,"
             "last_success_at=?,last_error=NULL WHERE id=?",
             (kind, headers.get("etag"), headers.get("last-modified"), checked, checked,
              source_id))
         return {"source": source["name"], "found": len(events), "new": made,
-                "updated": updated, "unchanged": False}
+                "updated": updated, "alerts": alerts, "unchanged": False}
     except Exception as exc:
         conn.execute(
             "UPDATE web_source SET last_checked_at=?,last_error=? WHERE id=?",
@@ -862,12 +1433,12 @@ def poll_all(conn: sqlite3.Connection, source_ids: list[int] | None = None,
         where += f" AND id IN ({','.join('?' * len(source_ids))})"
         params.extend(source_ids)
     rows = conn.execute(f"SELECT id,name FROM web_source WHERE {where} ORDER BY name", params).fetchall()
-    total = {"sources": len(rows), "found": 0, "new": 0, "updated": 0,
+    total = {"sources": len(rows), "found": 0, "new": 0, "updated": 0, "alerts": 0,
              "errors": 0, "error_messages": []}
     for row in rows:
         log(f"checking {row['name']} website")
         result = poll_source(conn, row["id"], opener, extractor=extractor)
-        for key in ("found", "new", "updated"):
+        for key in ("found", "new", "updated", "alerts"):
             total[key] += result.get(key, 0)
         total["errors"] += int("error" in result)
         if "error" in result:

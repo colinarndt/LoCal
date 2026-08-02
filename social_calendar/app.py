@@ -33,11 +33,13 @@ from AppKit import (NSApplication, NSApplicationActivationPolicyAccessory,
                     NSApplicationActivationPolicyRegular, NSBackingStoreBuffered,
                     NSButton, NSFont, NSImage, NSMenu, NSMenuItem, NSObject,
                     NSScreen, NSSecureTextField, NSTextField,
-                    NSVariableStatusItemLength, NSStatusBar, NSWindow,
+                    NSUserNotificationCenter, NSVariableStatusItemLength, NSStatusBar, NSWindow,
+                    NSWorkspace,
                     NSWindowStyleMaskClosable, NSWindowStyleMaskMiniaturizable,
                     NSWindowStyleMaskResizable, NSWindowStyleMaskTitled)
 from Foundation import NSMakeRect, NSTimer, NSURL, NSURLRequest
-from WebKit import WKWebView, WKWebViewConfiguration
+from WebKit import (WKNavigationActionPolicyAllow, WKNavigationActionPolicyCancel,
+                    WKWebView, WKWebViewConfiguration)
 
 from . import config, db, discovery, paths, scheduler, spend, web
 
@@ -144,6 +146,21 @@ def _install_main_menu(app) -> None:
     app.setMainMenu_(main)
 
 
+class ExternalLinkDelegate(NSObject):
+    """Send `target=_blank` links from the embedded calendar to the browser."""
+
+    def webView_decidePolicyForNavigationAction_decisionHandler_(
+            self, webview, action, decision_handler):
+        target_frame = action.targetFrame()
+        url = action.request().URL()
+        scheme = str(url.scheme() or "").lower() if url else ""
+        if target_frame is None and scheme in {"http", "https", "mailto"}:
+            NSWorkspace.sharedWorkspace().openURL_(url)
+            decision_handler(WKNavigationActionPolicyCancel)
+            return
+        decision_handler(WKNavigationActionPolicyAllow)
+
+
 class AppDelegate(NSObject):
 
     # PyObjC constructs via alloc().init(); __init__ is not called for us.
@@ -155,6 +172,7 @@ class AppDelegate(NSObject):
         self.url = f"http://127.0.0.1:{port}/"
         self.window = None
         self.webview = None
+        self.link_delegate = None
         self.keys_window = None
         self.key_fields = {}
         self._stop = threading.Event()
@@ -163,6 +181,7 @@ class AppDelegate(NSObject):
     # --- lifecycle ----------------------------------------------------------
 
     def applicationDidFinishLaunching_(self, notification):
+        NSUserNotificationCenter.defaultUserNotificationCenter().setDelegate_(self)
         bar = NSStatusBar.systemStatusBar()
         self.status_item = bar.statusItemWithLength_(NSVariableStatusItemLength)
         button = self.status_item.button()
@@ -199,6 +218,13 @@ class AppDelegate(NSObject):
     def applicationShouldTerminateAfterLastWindowClosed_(self, sender):
         # Closing the calendar window hides it; the app lives in the menu bar.
         return False
+
+    def userNotificationCenter_didActivateNotification_(self, center, notification):
+        """Open the ticket target when the user presses a performer alert."""
+        info = notification.userInfo()
+        ticket_url = info.objectForKey_("ticket_url") if info else None
+        if ticket_url:
+            NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(ticket_url))
 
     # --- menu ---------------------------------------------------------------
 
@@ -317,6 +343,10 @@ class AppDelegate(NSObject):
         config = WKWebViewConfiguration.alloc().init()
         self.webview = WKWebView.alloc().initWithFrame_configuration_(
             self.window.contentView().bounds(), config)
+        # WKWebView ignores target=_blank by default. Keep a strong reference
+        # to the delegate, then pass external pages and ticket links to macOS.
+        self.link_delegate = ExternalLinkDelegate.alloc().init()
+        self.webview.setNavigationDelegate_(self.link_delegate)
         self.webview.setAutoresizingMask_(1 << 1 | 1 << 4)   # width | height
         self.webview.loadRequest_(
             NSURLRequest.requestWithURL_(NSURL.URLWithString_(self.url)))
@@ -465,11 +495,12 @@ class AppDelegate(NSObject):
     # --- the daily run ------------------------------------------------------
 
     @objc.python_method
-    def _start_run(self, reason: str) -> None:
+    def _start_run(self, reason: str, website_ids=None, include_accounts: bool = True) -> None:
         with db.session(web.app.config["DB"]) as conn:
-            handles = discovery.approved_handles(conn)
-            website_ids = [r["id"] for r in conn.execute(
-                "SELECT id FROM web_source WHERE enabled=1 ORDER BY id")]
+            handles = discovery.approved_handles(conn) if include_accounts else []
+            if website_ids is None:
+                website_ids = [r["id"] for r in conn.execute(
+                    "SELECT id FROM web_source WHERE enabled=1 ORDER BY id")]
         if not handles and not website_ids:
             print("no followed sources; nothing to fetch", file=sys.stderr)
             return
@@ -490,8 +521,12 @@ class AppDelegate(NSObject):
             try:
                 with db.session(web.app.config["DB"]) as conn:
                     overdue = scheduler.due(conn)
-                if overdue and web.JOB["state"] != "running":
-                    self._start_run("scheduled")
+                    performer_ids = scheduler.due_performer_source_ids(conn)
+                if web.JOB["state"] != "running":
+                    if overdue:
+                        self._start_run("scheduled")
+                    elif performer_ids:
+                        self._start_run("performer check", performer_ids, include_accounts=False)
             except Exception as exc:
                 # A scheduler thread that dies takes the daily run with it and
                 # says nothing, which is the worst available outcome.

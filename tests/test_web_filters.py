@@ -119,3 +119,26 @@ def test_confirm_returns_to_the_event_card(tmp_path, monkeypatch):
         headers={"X-Requested-With": "fetch"},
     )
     assert ajax_response.get_json() == {"confirmed": False}
+
+
+def test_event_calendar_download_contains_only_the_selected_event(tmp_path, monkeypatch):
+    path = tmp_path / "calendar.db"
+    with db.session(path) as conn:
+        conn.execute(
+            "INSERT INTO source_post (post_id,polled_handle,posted_at,permalink,fetched_at) "
+            "VALUES ('p1','venue','2026-07-29','https://events.example/show','now')")
+        conn.execute(
+            "INSERT INTO event (post_id,title,starts_at,start_time_known,venue_name,ticket_url,created_at) "
+            "VALUES ('p1','Show','2026-08-01T20:00:00',1,'Example Room',"
+            "'https://tickets.example/show','now')")
+
+    monkeypatch.setitem(web.app.config, "DB", str(path))
+    response = web.app.test_client().get("/event/1/calendar.ics")
+
+    assert response.status_code == 200
+    assert response.mimetype == "text/calendar"
+    assert response.headers["Content-Disposition"] == "attachment; filename=event-1.ics"
+    assert b"SUMMARY:Show" in response.data
+    assert b"LOCATION:Example Room" in response.data
+    assert b"tickets: https://tickets.example/show" in response.data
+    assert b"UID:sc-1@social-calendar" in response.data
