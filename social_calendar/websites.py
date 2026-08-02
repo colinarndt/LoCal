@@ -587,6 +587,106 @@ def parse_bandsintown_api(body: str, performer_name: str | None = None) -> list[
     return _disambiguate_occurrences(out)
 
 
+_BOPLEX_REFINEMENT = re.compile(
+    r"^boplex_events:startDate:asc\[refinementList\]\[(relatedTitle|venueTitle)\]\[\d+\]$")
+
+
+def _is_boplex(url: str) -> bool:
+    hostname = (urllib.parse.urlsplit(url).hostname or "").lower()
+    return hostname == "boplex.com" or hostname.endswith(".boplex.com")
+
+
+def _boplex_filters(page_url: str) -> list[str]:
+    """Translate BOplex's InstantSearch URL refinements for its public API."""
+    selections: dict[str, list[str]] = {"relatedTitle": [], "venueTitle": []}
+    for key, value in urllib.parse.parse_qsl(urllib.parse.urlsplit(page_url).query):
+        match = _BOPLEX_REFINEMENT.fullmatch(key)
+        if match and value:
+            selections[match.group(1)].append(value)
+
+    today = dt.datetime.now(config.tzinfo()).date()
+    local_midnight = dt.datetime.combine(today, dt.time(), config.tzinfo())
+    filters = [f"endDate >= {int(local_midnight.timestamp())}"]
+    for attribute, values in selections.items():
+        if not values:
+            continue
+        # Meilisearch filters use JSON-style quoted string literals.
+        options = " OR ".join(
+            f"{attribute} = {json.dumps(value)}" for value in dict.fromkeys(values))
+        filters.append(f"({options})")
+    return filters
+
+
+def _boplex_timestamp(value) -> tuple[str | None, bool]:
+    """Convert BOplex's Unix timestamps to the configured local display zone."""
+    try:
+        stamp = int(value)
+    except (TypeError, ValueError):
+        return None, False
+    local = dt.datetime.fromtimestamp(stamp, dt.timezone.utc).astimezone(config.tzinfo())
+    return local.replace(tzinfo=None).isoformat(timespec="seconds"), True
+
+
+def _boplex_price(value) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    low, high = value.get("min"), value.get("max")
+    if low is None:
+        return None
+    if high is not None and high != low:
+        return f"${low}\u2013${high}"
+    return f"${low}"
+
+
+def parse_boplex_api(body: str, base_url: str) -> list[StructuredEvent]:
+    """Read BOplex's public Meilisearch response behind its event listing."""
+    try:
+        payload = json.loads(body)
+        results = payload.get("results") if isinstance(payload, dict) else None
+        records = results[0].get("hits") if isinstance(results, list) and results else None
+    except (TypeError, ValueError, AttributeError):
+        return []
+    if not isinstance(records, list):
+        return []
+
+    events: list[StructuredEvent] = []
+    for record in records:
+        if not isinstance(record, dict) or not record.get("id"):
+            continue
+        # The feed supplies ``startTime`` at midnight for all-day or multi-day
+        # listings. Its rendered displayDate is the reliable indication that a
+        # clock time was actually published.
+        display_date = _text(record.get("displayDate")) or ""
+        has_clock = "|" in display_date and bool(display_date.rsplit("|", 1)[1].strip())
+        starts, known = _boplex_timestamp(record.get("startTime") if has_clock else None)
+        if not starts:
+            starts, _ = _boplex_timestamp(record.get("startDate"))
+            if starts:
+                starts, known = starts[:10], False
+        if not starts:
+            continue
+        ends, _ = _boplex_timestamp(record.get("endDate"))
+        if ends:
+            ends = ends[:10]
+            if ends == starts[:10]:
+                ends = None
+        uri = _text(record.get("uri")) or _text(record.get("slug")) or ""
+        category = _text(record.get("relatedTitle"))
+        ticket_status = _text(record.get("ticketCTA"))
+        events.append(StructuredEvent(
+            external_id=f"boplex:{record['id']}", title=_text(record.get("title")),
+            starts_at=starts, start_time_known=known, ends_at=ends,
+            venue_name=_text(record.get("venueTitle")),
+            permalink=urllib.parse.urljoin(base_url, "/" + uri.lstrip("/")),
+            category=_category(category or ""), price_text=_boplex_price(record.get("eventPrice")),
+            city="Charlotte", region="NC", ticket_url=_text(record.get("ticketmaster")),
+            ticket_status=ticket_status,
+            image_url=_image_url(record.get("image")),
+            raw={"parser": "boplex-api", "event": record},
+        ))
+    return _disambiguate_occurrences(events)
+
+
 def _walk_json(value):
     if isinstance(value, list):
         for item in value:
@@ -1015,6 +1115,29 @@ def _request(url: str, etag: str | None = None, modified: str | None = None,
         return data, response_headers, response.geturl()
 
 
+def _boplex_request(page_url: str, opener=urllib.request.urlopen) -> bytes:
+    """Fetch up to 1,000 visible BOplex events from its own public endpoint."""
+    endpoint = urllib.parse.urljoin(page_url, "/api/meilisearch/multi-search")
+    payload = json.dumps({"queries": [{
+        "indexUid": "boplex_events",
+        "q": "",
+        "filter": _boplex_filters(page_url),
+        "sort": ["startDate:asc"],
+        "limit": 1000,
+        "offset": 0,
+    }]}).encode("utf-8")
+    request = urllib.request.Request(endpoint, data=payload, headers={
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    })
+    with opener(request, timeout=30) as response:
+        data = response.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise ValueError("BOplex event response is larger than 10 MB")
+    return data
+
+
 def _parse_response(data: bytes, headers: dict, final_url: str,
                     opener, source=None) -> tuple[list[StructuredEvent], str, str]:
     text = data.decode("utf-8-sig", errors="replace")
@@ -1096,6 +1219,15 @@ def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen,
                     api_data.decode("utf-8-sig", errors="replace"), final_url, source["name"])
                 if events:
                     return FetchResult(events, "punchup-api", headers, final_url)
+        if _is_boplex(final_url):
+            try:
+                api_data = _boplex_request(final_url, opener=opener)
+            except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError):
+                api_data = None
+            if api_data is not None:
+                events = parse_boplex_api(api_data.decode("utf-8-sig", errors="replace"), final_url)
+                if events:
+                    return FetchResult(events, "boplex-api", headers, final_url)
         widget = _bandsintown_widget_config(text, final_url)
         if widget:
             artist, app_id = widget

@@ -1,5 +1,6 @@
 import gzip
 import json
+import datetime as dt
 
 from social_calendar import db, pipeline, websites
 
@@ -68,6 +69,24 @@ RIVERSIDE_EMPTY = """<!doctype html><html><body>
 <h3>PAST</h3>
 </body></html>"""
 
+BOPLEX_RESPONSE = {
+    "results": [{"indexUid": "boplex_events", "hits": [{
+        "id": 2987603,
+        "title": "John Mulaney: Mister Whatever",
+        "venueTitle": "Ovens Auditorium",
+        "relatedTitle": "Comedy",
+        "startDate": 1786075200,
+        "endDate": 1786075200,
+        "startTime": 1786143600,
+        "displayDate": "Fri, Aug 07|7PM",
+        "uri": "events/john-mulaney-mister-whatever",
+        "ticketmaster": "https://tickets.example/john-mulaney",
+        "ticketCTA": "Tickets",
+        "eventPrice": {"min": 35, "max": 75},
+        "image": {"url": "https://images.example/john-mulaney.jpg"},
+    }]}],
+}
+
 
 class Response:
     def __init__(self, body: str | bytes, url="https://venue.example/events",
@@ -121,6 +140,56 @@ def test_jsonld_music_event_is_parsed_without_a_model_call():
     assert event.permalink == "https://venue.example/events/tennis"
     assert event.price_text == "$25"
     assert event.category == "music"
+
+
+def test_boplex_api_parser_preserves_time_ticket_price_and_image(monkeypatch):
+    monkeypatch.setattr(websites.config, "tzinfo", lambda: dt.timezone(dt.timedelta(hours=-4)))
+
+    events = websites.parse_boplex_api(
+        json.dumps(BOPLEX_RESPONSE), "https://www.boplex.com/events-ticketing/events")
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.external_id == "boplex:2987603"
+    assert event.starts_at == "2026-08-07T19:00:00"
+    assert event.start_time_known is True
+    assert event.venue_name == "Ovens Auditorium"
+    assert event.category == "comedy"
+    assert event.city == "Charlotte"
+    assert event.region == "NC"
+    assert event.price_text == "$35\u2013$75"
+    assert event.ticket_url == "https://tickets.example/john-mulaney"
+    assert event.ticket_status == "Tickets"
+    assert event.image_url == "https://images.example/john-mulaney.jpg"
+    assert event.permalink == "https://www.boplex.com/events/john-mulaney-mister-whatever"
+
+
+def test_boplex_fetch_uses_its_public_search_feed_and_page_filters(monkeypatch):
+    monkeypatch.setattr(websites.config, "tzinfo", lambda: dt.timezone(dt.timedelta(hours=-4)))
+    calls = []
+
+    def opener(request, timeout=30):
+        calls.append(request)
+        if request.full_url.endswith("/api/meilisearch/multi-search"):
+            return Response(json.dumps(BOPLEX_RESPONSE), request.full_url,
+                            "application/json")
+        return Response("<!doctype html><title>BOplex events</title>", request.full_url)
+
+    source = {
+        "url": ("https://www.boplex.com/events-ticketing/events?"
+                "boplex_events%3AstartDate%3Aasc%5BrefinementList%5D%5BrelatedTitle%5D%5B0%5D=Comedy"
+                "&boplex_events%3AstartDate%3Aasc%5BrefinementList%5D%5BvenueTitle%5D%5B0%5D=Ovens%20Auditorium"),
+        "etag": None, "last_modified": None, "source_type": "venue",
+    }
+    events, kind, _, _ = websites.fetch_events(source, opener)
+
+    assert kind == "boplex-api"
+    assert len(events) == 1
+    assert len(calls) == 2
+    query = json.loads(calls[1].data)
+    filters = query["queries"][0]["filter"]
+    assert any('relatedTitle = "Comedy"' in item for item in filters)
+    assert any('venueTitle = "Ovens Auditorium"' in item for item in filters)
 
 
 def test_jsonld_event_uses_its_explicit_event_image():
