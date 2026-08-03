@@ -8,7 +8,7 @@
 
 LoCal shows upcoming events in your area from the artists and venues you care about
 
-### [Download LoCal for Mac](https://github.com/colinarndt/instagram-calendar/releases/latest)
+### [Download LoCal for Mac](https://github.com/colinarndt/LoCal/releases/latest)
 
 <sub>Apple Silicon · no account · your data stays on your Mac</sub>
 
