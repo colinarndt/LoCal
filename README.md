@@ -8,10 +8,10 @@
 
 LoCal shows upcoming events in your area from the artists and venues you care about
 
-Supports events from:
-- Venue events page
-- Artist tour page 
-- Instagram accounts
+Can pull down events from:
+_Venue events page
+Artist tour page 
+Instagram accounts_
 
 ### [Download LoCal for Mac](https://github.com/colinarndt/LoCal/releases/latest)
 
