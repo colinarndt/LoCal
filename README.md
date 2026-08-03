@@ -8,8 +8,6 @@
 
 LoCal shows upcoming events in your area from the artists and venues you care about
 
-Can pull down events from: Venue events page / Artist tour page / Instagram accounts
-
 ### [Download LoCal for Mac](https://github.com/colinarndt/LoCal/releases/latest)
 
 <sub>Apple Silicon · no account · your data stays on your Mac</sub>
