@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>InstaCalendar</title>
+<title>LoCal</title>
 <style>
   :root {
     --bg:#fbfaf8; --card:#fff; --ink:#1a1a1a; --muted:#6b6b6b; --line:#e5e2dd;
@@ -134,11 +134,23 @@
   .badge { font-size:.72rem; padding:1px 7px; border-radius:999px; border:1px solid var(--line); }
   .review-note { margin-top:7px; font-size:.82rem; color:var(--warn);
                  background:var(--warn-bg); padding:6px 9px; border-radius:6px; }
+  .series-review { background:var(--card); border:1px solid var(--warn);
+                   border-radius:10px; padding:12px 14px; margin:10px 0; }
+  .series-review h2 { font-size:1rem; margin:0 0 3px; }
+  .series-review p { margin:3px 0; color:var(--muted); font-size:.87rem; }
   .actions { margin-top:9px; display:flex; gap:6px; flex-wrap:wrap; }
   /* desktop: park the controls on the right instead of under the text */
 
   .actions button { font-size:.8rem; padding:4px 10px; }
   .actions form { display:inline; }
+  .hide-choice { display:inline; position:relative; }
+  .hide-choice summary { list-style:none; cursor:pointer; font-size:.8rem; padding:4px 10px;
+                         border:1px solid var(--line); border-radius:7px;
+                         background:var(--bg); color:var(--ink); }
+  .hide-choice summary::-webkit-details-marker { display:none; }
+  .hide-options { flex-basis:100%; margin-top:5px; padding:8px 9px; border-radius:7px;
+                  background:var(--warn-bg); color:var(--warn); font-size:.8rem; }
+  .hide-options span { display:block; margin-bottom:6px; }
   .icon-action { width:30px; height:29px; display:inline-flex; align-items:center;
                  justify-content:center; color:var(--ink); background:var(--bg);
                  border:1px solid var(--line); border-radius:7px; text-decoration:none; }
@@ -188,10 +200,12 @@
 
 <header>
   <h1><img class="brand-icon" src="{{ url_for('static', filename='icon.svg') }}" alt="">
-    <span class="brand-name">InstaCalendar</span></h1>
+    <span class="brand-name">LoCal</span></h1>
   <span class="count">
     {# calendar totals cover the whole grid, spill days included -- not just the month #}
     <span id="event-total">{{ total }} event{{ '' if total == 1 else 's' }}{% if view == 'calendar' %}<span class="inview"> in view</span>{% endif %}</span>
+    <span id="review-total">{% if review_count %}
+      · <a href="?{{ query_with(args, review='1') }}">{{ review_count }} to review</a>{% endif %}</span>
     · <a href="/discover">sources</a>
     · <a href="/settings">settings</a>
   </span>
@@ -200,7 +214,7 @@
 {% if not configured %}
   <div class="setup">
     <strong>Not set up yet.</strong> You're seeing the example city ({{ cfg['city'] }}).
-    Run <code>python -m social_calendar.cli init</code> to set your city and API keys,
+    Run <code>local-calendar init</code> to set your city and API keys,
     or <a href="/settings">change the location here</a>.
   </div>
 {% endif %}
@@ -223,6 +237,9 @@
   {% if view == 'calendar' %}
     <input type="hidden" name="view" value="calendar">
     <input type="hidden" name="month" value="{{ args.get('month') }}">
+  {% endif %}
+  {% if args.get('review') == '1' %}
+    <input type="hidden" name="review" value="1">
   {% endif %}
   <div class="row">
     {% for c in categories %}
@@ -278,9 +295,6 @@
   <div class="row">
     <label class="chip"><input type="checkbox" name="confirmed" value="1"
       {% if args.get('confirmed')=='1' %}checked{% endif %}> confirmed only</label>
-    <label class="chip"><input type="checkbox" name="review" value="1"
-      {% if args.get('review')=='1' %}checked{% endif %}> needs review</label>
-    <button class="primary" type="submit">Filter</button>
     <a href="/{% if view == 'calendar' %}?view=calendar{% endif %}"><button type="button">Reset</button></a>
   </div>
 </form>
@@ -290,8 +304,30 @@
 <p class="subline"><a href="/calendar.ics?{{ query_with(args) }}"
      title="Subscribe to this exact view -- the same filters apply">subscribe to this calendar</a>
   · <a href="/events.csv?{{ query_with(args) }}" target="_blank" rel="noopener"
-       download="social-calendar.csv"
+       download="local-calendar.csv"
        title="Download this view as a CSV -- import it into Google Sheets, Excel or Numbers">download CSV</a></p>
+
+{% if args.get('review') == '1' and series_candidates %}
+  {% for candidate in series_candidates %}
+    <section class="series-review">
+      <h2>Possible recurring series: {{ candidate['title'] }}</h2>
+      <p>We found {{ candidate['occurrence_count'] }} dated events from
+        {{ candidate['source_name'] }}, from {{ candidate['first_date'] }} through
+        {{ candidate['last_date'] }}.</p>
+      {% if candidate['hidden_count'] %}
+        <p>{{ candidate['hidden_count'] }} occurrence{{ '' if candidate['hidden_count'] == 1 else 's' }} already hidden.</p>
+      {% endif %}
+      <div class="actions">
+        <form method="post" action="/series-candidate/{{ candidate['id'] }}/confirm">
+          <button class="primary" type="submit">treat as series</button></form>
+        <form method="post" action="/series-candidate/{{ candidate['id'] }}/confirm-hide">
+          <button type="submit">hide series</button></form>
+        <form method="post" action="/series-candidate/{{ candidate['id'] }}/reject">
+          <button type="submit">keep separate</button></form>
+      </div>
+    </section>
+  {% endfor %}
+{% endif %}
 
 {% macro card(e, when_label) %}
     <article id="event-{{ e['id'] }}" class="ev {% if e['needs_review'] %}review{% endif %}">
@@ -336,8 +372,21 @@
         </a>
         <form class="confirm-form" method="post" action="/event/{{ e['id'] }}/confirm">
           <button type="submit">{{ 'unconfirm' if e['is_confirmed'] else 'confirm' }}</button></form>
-        <form method="post" action="/event/{{ e['id'] }}/hide">
-          <button type="submit">hide</button></form>
+        {% if e['series_candidate_id'] and not e['occurrence_of'] %}
+          <details class="hide-choice">
+            <summary>hide</summary>
+            <div class="hide-options">
+              <span>This looks like a recurring series. What should be hidden?</span>
+              <form method="post" action="/series-candidate/{{ e['series_candidate_id'] }}/confirm-hide">
+                <button type="submit">all and future dates</button></form>
+              <form method="post" action="/event/{{ e['id'] }}/hide">
+                <button type="submit">only this date</button></form>
+            </div>
+          </details>
+        {% else %}
+          <form method="post" action="/event/{{ e['id'] }}/hide">
+            <button type="submit">{{ 'hide series' if e['occurrence_of'] else 'hide' }}</button></form>
+        {% endif %}
         <form method="post" action="/event/{{ e['id'] }}/flag">
           <button type="submit">{{ 'clear flag' if e['needs_review'] else 'flag' }}</button></form>
       </div>
@@ -350,8 +399,9 @@
              data-venue="{{ e['venue_name'] or '' }}{% if e['neighborhood'] %} · {{ e['neighborhood'] }}{% endif %}"
              data-price="{{ e['price_text'] or '' }}"
              data-handle="{{ e['attributed_handle'] or e['polled_handle'] or '' }}"
-             data-link="{{ e['permalink'] or '' }}">
-        <div class="capsrc" hidden>{{ e['caption'] or '' }}</div>
+             data-link="{{ e['permalink'] or '' }}"
+             data-link-label="{{ e['permalink']|source_link_label }}">
+        <div class="capsrc" hidden>{{ (e['caption'] or '')|caption_html }}</div>
       {% endif %}
      </div>
     </article>
@@ -395,10 +445,12 @@
   <div class="day" id="d-{{ grp['date'] }}">{{ grp['label'] }}</div>
   {% for e in grp['events'] %}{{ card(e, grp['label']) }}{% endfor %}
 {% else %}
+  {% if not (args.get('review') == '1' and series_candidates) %}
   <p class="empty">
     {% if view == 'calendar' %}Nothing in {{ month_label }} matches those filters.
     {% else %}Nothing matches those filters.{% endif %}
   </p>
+  {% endif %}
 {% endfor %}
 </div>
 
@@ -411,7 +463,7 @@
       <h3></h3>
       <div class="lb-meta"></div>
       <div class="lb-cap"></div>
-      <a class="lb-link" target="_blank" rel="noopener">open on Instagram &#8599;</a>
+      <a class="lb-link" target="_blank" rel="noopener">instagram post &#8599;</a>
     </aside>
   </div>
 </div>
@@ -432,9 +484,13 @@
         meta.textContent = [d.when, d.venue, d.price, d.handle && '@' + d.handle]
                              .filter(Boolean).join(' · ');
         var src = t.parentElement.querySelector('.capsrc');
-        cap.textContent = src ? src.textContent.trim() : '';
-        cap.style.display = cap.textContent ? '' : 'none';
-        if (d.link) { link.href = d.link; link.style.display = ''; }
+        cap.innerHTML = src ? src.innerHTML.trim() : '';
+        cap.style.display = cap.innerHTML ? '' : 'none';
+        if (d.link) {
+          link.href = d.link;
+          link.textContent = (d.linkLabel || 'event page') + ' ↗';
+          link.style.display = '';
+        }
         else { link.style.display = 'none'; }
         lb.classList.add('on');
       });
@@ -531,10 +587,12 @@
         var page = new DOMParser().parseFromString(await response.text(), 'text/html'),
             nextResults = page.getElementById('results'),
             nextTotal = page.getElementById('event-total'),
+            nextReviewTotal = page.getElementById('review-total'),
             nextViews = page.querySelector('.views');
-        if (!nextResults || !nextTotal || !nextViews) throw new Error('invalid search response');
+        if (!nextResults || !nextTotal || !nextReviewTotal || !nextViews) throw new Error('invalid search response');
         results.innerHTML = nextResults.innerHTML;
         document.getElementById('event-total').innerHTML = nextTotal.innerHTML;
+        document.getElementById('review-total').innerHTML = nextReviewTotal.innerHTML;
         document.querySelector('.views').innerHTML = nextViews.innerHTML;
         history.replaceState(null, '', url);
         bindResults(results);
@@ -551,8 +609,11 @@
     });
   })();
 
-  // Pills apply on click -- no separate Filter press for the toggles.
-  document.querySelectorAll('.chip input').forEach(function (el) {
+  // Every filter applies itself. Text fields use their native change event,
+  // which fires on blur; pressing Enter still submits the form immediately.
+  document.querySelectorAll(
+      '.filters select, .filters input[type="checkbox"], .filters input[type="range"], .filters input[type="text"]'
+  ).forEach(function (el) {
     el.addEventListener('change', function () { document.getElementById('f').submit(); });
   });
 </script>

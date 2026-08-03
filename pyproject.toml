@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "instagram-calendar"
-version = "0.1.0"
-description = "Turns Instagram and venue website announcements into a filterable local calendar."
+name = "local-calendar"
+version = "0.3.0"
+description = "A local event calendar built from Instagram, venue, and performer sources."
 readme = "README.md"
 requires-python = ">=3.11"
 
@@ -29,6 +29,10 @@ app = [
 ]
 
 [project.scripts]
+# Primary LoCal commands.
+local-calendar = "social_calendar.cli:main"
+local-calendar-web = "social_calendar.web:main"
+# Kept for existing installs while they move to the LoCal names.
 social-calendar = "social_calendar.cli:main"
 social-calendar-web = "social_calendar.web:main"
 

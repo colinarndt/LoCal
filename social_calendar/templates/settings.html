@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Settings · Social Calendar</title>
+<title>Settings · LoCal</title>
 <style>
   :root {
     --bg:#fbfaf8; --card:#fff; --ink:#1a1a1a; --muted:#6b6b6b; --line:#e5e2dd;
@@ -56,10 +56,12 @@
 {% if saved %}<div class="msg ok">Saved.</div>{% endif %}
 {% if not configured %}
   <div class="msg err">Not set up yet — you're seeing the example city. Run
-    <code>python -m social_calendar.cli init</code>, or just fill this in.</div>
+    <code>local-calendar init</code>, or just fill this in.</div>
 {% endif %}
 
-<form method="post" class="card">
+<form method="post">
+<h2>Location and calendar</h2>
+<div class="card">
   <div class="field">
     <label for="city">City</label>
     <input type="text" id="city" name="city" value="{{ cfg['city'] }}"
@@ -93,6 +95,32 @@
       or toggle it instantly from its menu.</div>
   </div>
 
+  </div>
+
+  <h2>Automatic refresh</h2>
+  <div class="card">
+    <p class="hint" style="margin-top:0">The Mac app checks for due sources every
+      10 minutes while it is running. These defaults can range from one hour to 30 days.</p>
+    <div class="field">
+      <label for="instagram_refresh_hours">Instagram accounts (hours)</label>
+      <input type="number" id="instagram_refresh_hours" name="instagram_refresh_hours"
+             min="1" max="720" step="1" value="{{ cfg['instagram_refresh_hours'] }}">
+      <div class="hint">Default: 24 hours. Instagram refreshes can incur scraping and model costs.</div>
+    </div>
+    <div class="field">
+      <label for="performer_refresh_hours">Performer webpages (hours)</label>
+      <input type="number" id="performer_refresh_hours" name="performer_refresh_hours"
+             min="1" max="720" step="1" value="{{ cfg['performer_refresh_hours'] }}">
+      <div class="hint">Default: 6 hours. Each performer page keeps its own refresh clock.</div>
+    </div>
+    <div class="field">
+      <label for="venue_refresh_hours">Venue webpages (hours)</label>
+      <input type="number" id="venue_refresh_hours" name="venue_refresh_hours"
+             min="1" max="720" step="1" value="{{ cfg['venue_refresh_hours'] }}">
+      <div class="hint">Default: 24 hours. New pages are eligible for their first check automatically.</div>
+    </div>
+  </div>
+
   <div class="field"><button type="submit">Save</button></div>
 </form>
 
@@ -110,7 +138,7 @@
     <code>0.0.0.0</code> with no login so your phone can reach it, which would make
     a key field on this page a key field for everyone on the network. Set them in
     the Mac app under <b>API&nbsp;Keys…</b> — a native window nothing on the
-    network can reach — or with <code>social-calendar init</code>.</p>
+    network can reach — or with <code>local-calendar init</code>.</p>
 </div>
 
 <footer>Settings live in <code>config.json</code>; keys live in <code>.env</code>.

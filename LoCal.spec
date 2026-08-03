@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller build for the menu bar app.
 
-    pyinstaller --noconfirm InstagramCalendar.spec    # -> dist/Instagram Calendar.app
+    pyinstaller --noconfirm LoCal.spec    # -> dist/LoCal.app
 
 PyInstaller rather than py2app: py2app's newest release (0.28.10) reads
 `[project].dependencies` out of pyproject.toml as `install_requires` and then
@@ -54,7 +54,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Instagram Calendar",
+    name="LoCal",
     debug=False,
     strip=False,
     upx=False,          # UPX-compressed binaries fail Gatekeeper on arm64
@@ -71,20 +71,20 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="Instagram Calendar",
+    name="LoCal",
 )
 
 app = BUNDLE(
     coll,
-    name="Instagram Calendar.app",
+    name="LoCal.app",
     # Drawn by make_icon.py, which is the editable source for it.
     icon="AppIcon.icns",
-    bundle_identifier="com.colinarndt.instagram-calendar",
+    bundle_identifier="com.colinarndt.local-calendar",
     info_plist={
-        "CFBundleName": "Instagram Calendar",
-        "CFBundleDisplayName": "Instagram Calendar",
-        "CFBundleShortVersionString": "0.1.0",
-        "CFBundleVersion": "0.1.0",
+        "CFBundleName": "LoCal",
+        "CFBundleDisplayName": "LoCal",
+        "CFBundleShortVersionString": "0.3.0",
+        "CFBundleVersion": "0.3.0",
         # Menu bar only: no Dock tile, no app menu bar takeover.
         "LSUIElement": True,
         "NSHighResolutionCapable": True,

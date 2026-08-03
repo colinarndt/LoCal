@@ -8,9 +8,8 @@ native pixel count, and the source of the artwork is readable instead of being a
 binary nobody can edit.
 
 The mark is a calendar page -- binder tabs, header band, four ruled lines --
-over the warm-to-violet gradient that reads as "Instagram" at a glance.
-Deliberately *evocative* rather than a copy: Instagram's glyph is a trademark,
-and the gradient carries the association on its own.
+over a warm-to-violet gradient. The mark stays simple enough to read in the
+menu bar, Dock, and Finder.
 
 Everything is a hole rather than a stroke. Even-odd filling on one white path
 means the gradient shows through the rules and the header split, so the shapes
@@ -39,7 +38,7 @@ CANVAS = 1024.0          # the size every coordinate below is expressed in
 BODY = (100.0, 100.0, 824.0, 824.0)
 BODY_RADIUS = 185.0
 
-# Instagram's warm-to-violet ramp, drawn corner to corner.
+# A warm-to-violet ramp, drawn corner to corner.
 STOPS = [
     (0.00, (0.996, 0.855, 0.459)),   # #FEDA75
     (0.25, (0.980, 0.494, 0.118)),   # #FA7E1E

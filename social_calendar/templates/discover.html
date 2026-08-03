@@ -1,6 +1,6 @@
 <!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sources · Social Calendar</title>
+<title>Sources · LoCal</title>
 <style>
  :root{--bg:#fbfaf8;--card:#fff;--ink:#1a1a1a;--muted:#6b6b6b;--line:#e5e2dd;--accent:#b4593a;}
  @media (prefers-color-scheme:dark){:root{--bg:#16161a;--card:#1f1f24;--ink:#ececee;
@@ -23,6 +23,7 @@
  button{font:inherit;font-size:.85rem;padding:5px 12px;border-radius:7px;border:1px solid var(--line);
         background:var(--bg);color:var(--ink);cursor:pointer}
  button.ok{background:var(--accent);color:#fff;border-color:transparent}
+ button.danger{color:#c0392b}
  form{display:inline} .empty{color:var(--muted);text-align:center;padding:40px 0}
  .who{display:flex;gap:11px;align-items:flex-start;min-width:0}
  .av{width:44px;height:44px;border-radius:50%;object-fit:cover;flex-shrink:0;
@@ -83,16 +84,19 @@
     {{ fetch_button(approved, 'or fetch it now') }}</p>
 {% endif %}
 {% if website_added %}
-  <p class="msg">Website added. Fetch it now to verify that it exposes a supported calendar.</p>
+  <p class="msg">Website added. It will be picked up by the next automatic check.</p>
 {% endif %}
 {% if performer_added %}
-  <p class="msg">Performer watch added. Fetch it now to find nearby tour dates.</p>
+  <p class="msg">Performer watch added. It will be picked up by the next automatic check.</p>
+{% endif %}
+{% if removed %}
+  <p class="msg">Removed {{ removed }} and its source-only imported events.</p>
 {% endif %}
 {% if err == 'busy' %}
   <p class="msg warn">A fetch is already running — one at a time.</p>
 {% elif err == 'no-keys' %}
   <p class="msg warn">Fetching needs both API keys. Run
-    <code>python -m social_calendar.cli init</code>, or check
+    <code>local-calendar init</code>, or check
     <a href="/settings">settings</a>.</p>
 {% elif err == 'nothing-polled' %}
   <p class="msg warn">Nothing is in the rotation yet — add an account or website first.</p>
@@ -153,14 +157,19 @@
       <div class="handle">{{ source['url'] }}{% if source['linked_handle'] %}
         · linked to @{{ source['linked_handle'] }}{% endif %}</div>
       {% if source['last_error'] %}<div class="why">{{ source['last_error'] }}</div>
-      {% elif source['last_success_at'] %}<div class="why">last checked {{ source['last_success_at']|local_stamp }}</div>
+      {% elif source['last_success_at'] %}<div class="why">last checked {{ source['last_success_at']|local_stamp }}{% if source['last_result'] == 'empty' %} · no upcoming events{% endif %}</div>
       {% else %}<div class="why">not checked yet</div>{% endif %}
     </div>
     <div class="source-actions">
       <form method="post" action="/discover/website/{{ source['id'] }}/fetch" class="fetchf">
         <button type="submit" {{ 'disabled' if job['state'] == 'running' }}>fetch now</button></form>
       <form method="post" action="/discover/website/{{ source['id'] }}/disable">
-        <button type="submit" title="stop following">stop</button></form>
+        <button type="submit" title="pause refreshes but keep imported events"
+                {{ 'disabled' if job['state'] == 'running' }}>pause</button></form>
+      <form method="post" action="/discover/website/{{ source['id'] }}/remove"
+            class="remove-source" data-source="{{ source['name'] }}">
+        <button class="danger" type="submit" title="remove source and its imported events"
+                {{ 'disabled' if job['state'] == 'running' }}>remove</button></form>
     </div>
   </div>
 {% else %}
@@ -184,14 +193,19 @@
         {% if source['notify'] %}<span class="n">alerts on</span>{% endif %}</div>
       <div class="handle">{{ source['nearby_dates'] or 0 }} nearby of {{ source['tour_dates'] }} tour dates</div>
       {% if source['last_error'] %}<div class="why">{{ source['last_error'] }}</div>
-      {% elif source['last_success_at'] %}<div class="why">last checked {{ source['last_success_at']|local_stamp }}</div>
+      {% elif source['last_success_at'] %}<div class="why">last checked {{ source['last_success_at']|local_stamp }}{% if source['last_result'] == 'empty' %} · no upcoming dates{% endif %}</div>
       {% else %}<div class="why">not checked yet</div>{% endif %}
     </div>
     <div class="source-actions">
       <form method="post" action="/discover/website/{{ source['id'] }}/fetch" class="fetchf">
         <button type="submit" {{ 'disabled' if job['state'] == 'running' }}>fetch now</button></form>
       <form method="post" action="/discover/website/{{ source['id'] }}/disable">
-        <button type="submit" title="stop following">stop</button></form>
+        <button type="submit" title="pause refreshes but keep imported events"
+                {{ 'disabled' if job['state'] == 'running' }}>pause</button></form>
+      <form method="post" action="/discover/website/{{ source['id'] }}/remove"
+            class="remove-source" data-source="{{ source['name'] }}">
+        <button class="danger" type="submit" title="remove source and its imported events"
+                {{ 'disabled' if job['state'] == 'running' }}>remove</button></form>
     </div>
   </div>
 {% else %}
@@ -279,6 +293,15 @@
     f.addEventListener('submit', function () {
       // The redirect lands before the worker reports anything; start watching.
       setTimeout(function () { timer = setInterval(poll, 2000); poll(); }, 500);
+    });
+  });
+
+  document.querySelectorAll('.remove-source').forEach(function (f) {
+    f.addEventListener('submit', function (event) {
+      var name = f.dataset.source || 'this source';
+      if (!confirm('Remove ' + name + ' and the events imported only from it?\n\nEvents also backed by Instagram or another website will stay.')) {
+        event.preventDefault();
+      }
     });
   });
 })();

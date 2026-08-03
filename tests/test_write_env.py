@@ -95,3 +95,35 @@ def test_show_in_dock_round_trips(tmp_path):
     assert config.load(path)["show_in_dock"] is True
     config.save({"show_in_dock": False}, path)
     assert config.load(path)["show_in_dock"] is False
+
+
+# --- automatic refresh settings --------------------------------------------
+
+def test_refresh_intervals_have_product_defaults(tmp_path):
+    cfg = config.load(tmp_path / "absent.json")
+    assert cfg["instagram_refresh_hours"] == 24
+    assert cfg["performer_refresh_hours"] == 6
+    assert cfg["venue_refresh_hours"] == 24
+
+
+def test_refresh_intervals_round_trip(tmp_path):
+    path = tmp_path / "config.json"
+    config.save({
+        "instagram_refresh_hours": 48,
+        "performer_refresh_hours": 12,
+        "venue_refresh_hours": 8,
+    }, path)
+    cfg = config.load(path)
+    assert cfg["instagram_refresh_hours"] == 48
+    assert cfg["performer_refresh_hours"] == 12
+    assert cfg["venue_refresh_hours"] == 8
+
+
+def test_invalid_stored_refresh_intervals_fall_back_to_defaults(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text('{"instagram_refresh_hours": 0, "performer_refresh_hours": "nope", '
+                    '"venue_refresh_hours": 721}')
+    cfg = config.load(path)
+    assert cfg["instagram_refresh_hours"] == 24
+    assert cfg["performer_refresh_hours"] == 6
+    assert cfg["venue_refresh_hours"] == 24

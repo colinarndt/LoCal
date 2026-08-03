@@ -450,6 +450,8 @@ _BANDSINTOWN_WIDGET_ARTIST = re.compile(
     r'data-artist-name\s*=\s*["\']([^"\']+)["\']', re.I)
 _BANDSINTOWN_WIDGET_APP = re.compile(
     r'data-app-id\s*=\s*["\']([^"\']+)["\']', re.I)
+_SEATED_ARTIST_ID = re.compile(
+    r'data-artist-id\s*=\s*["\']([0-9a-f-]{36})["\']', re.I)
 _RIVERSIDE_UPCOMING = re.compile(
     r'<span>\s*UPCOMING\s*</span>.*?<div class="event-list">(.*?)</div>\s*</div>.*?'
     r'<h3[^>]*>.*?\bPAST\b', re.I | re.S)
@@ -486,6 +488,87 @@ def _bandsintown_widget_config(page: str, page_url: str) -> tuple[str, str] | No
     if not (app or hostname):
         return None
     return artist.group(1), (app.group(1) if app else f"js_{hostname}")
+
+
+def _seated_artist_id(page: str) -> str | None:
+    """Read the artist UUID from Seated's standard embedded tour widget."""
+    if "widget.seated.com" not in page.casefold():
+        return None
+    match = _SEATED_ARTIST_ID.search(page)
+    return match.group(1) if match else None
+
+
+def _seated_request(artist_id: str, opener=urllib.request.urlopen) -> bytes:
+    """Fetch the same JSON:API tour feed used by Seated's browser widget."""
+    url = (f"https://cdn.seated.com/api/tour/{urllib.parse.quote(artist_id, safe='')}"
+           "?include=tour-events")
+    request = urllib.request.Request(url, headers={
+        "User-Agent": USER_AGENT,
+        "Accept": "application/vnd.api+json",
+        "X-Client-Version": "HEAD",
+    })
+    with opener(request, timeout=30) as response:
+        data = response.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise ValueError("Seated event response is larger than 10 MB")
+    return data
+
+
+def parse_seated_api(body: str, performer_name: str | None = None
+                     ) -> tuple[bool, list[StructuredEvent]]:
+    """Convert a valid Seated tour response, including an empty schedule."""
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError):
+        return False, []
+    tour = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(tour, dict) or tour.get("type") != "tours":
+        return False, []
+    relationships = tour.get("relationships")
+    relationship = (relationships.get("tour-events")
+                    if isinstance(relationships, dict) else None)
+    refs = relationship.get("data") if isinstance(relationship, dict) else None
+    if not isinstance(refs, list):
+        return False, []
+    included = payload.get("included") or []
+    if not isinstance(included, list):
+        return False, []
+    records = {
+        (str(item.get("type")), str(item.get("id"))): item
+        for item in included if isinstance(item, dict)
+    }
+    artist = tour.get("attributes") if isinstance(tour.get("attributes"), dict) else {}
+    title = _text(artist.get("name")) or performer_name
+    image_url = _text(artist.get("image-url"))
+    events: list[StructuredEvent] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        event_id = str(ref.get("id") or "")
+        record = records.get((str(ref.get("type")), event_id))
+        attrs = record.get("attributes") if isinstance(record, dict) else None
+        if not event_id or not isinstance(attrs, dict):
+            continue
+        starts, parsed_time_known = _local_iso(attrs.get("starts-at-date-local"))
+        if not starts:
+            continue
+        ends, _ = _local_iso(attrs.get("ends-at-date-local"))
+        venue = _text(attrs.get("venue-name"))
+        address = _text(attrs.get("formatted-address"))
+        details = _text(attrs.get("details")) or ""
+        sold_out = bool(attrs.get("is-sold-out"))
+        events.append(StructuredEvent(
+            external_id=f"seated:{event_id}", title=title, starts_at=starts,
+            start_time_known=bool(attrs.get("is-starts-at-known")) and parsed_time_known,
+            ends_at=ends, venue_name=venue,
+            permalink=f"https://go.seated.com/tour-events/{event_id}",
+            category=_category(f"{title or ''} {details}"), description=details,
+            raw={"parser": "seated-api", "event": record}, address=address,
+            ticket_url=f"https://link.seated.com/{event_id}",
+            ticket_status="sold out" if sold_out else "tickets",
+            image_url=image_url,
+        ))
+    return True, _disambiguate_occurrences(events)
 
 
 def _is_bandsintown_event_list(body: str) -> bool:
@@ -1075,6 +1158,7 @@ class FetchResult:
     content_hash: str | None = None
     model_output: str | None = None
     model: str | None = None
+    outcome: str = "events"  # events | empty | unchanged | unsupported
 
     def __iter__(self):
         """Keep the original four-value unpacking API for callers and tests."""
@@ -1175,8 +1259,8 @@ def _parse_response(data: bytes, headers: dict, final_url: str,
         if recognized:
             return events, "riverside-events", final_url
     visible, _ = model_page_text(text, final_url)
-    if re.search(r"\bno upcoming (?:tour )?(?:dates|shows|events)\b.{0,80}"
-                 r"\bcheck back soon\b", visible, re.I | re.S):
+    if re.search(r"\b(?:there (?:are|is) )?no upcoming "
+                 r"(?:tour )?(?:dates|shows|events)\b", visible, re.I):
         # A clear no-dates notice is a successful check, not an extraction
         # failure. It remains visible as zero tour dates in the source list.
         return [], "empty-tour-page", final_url
@@ -1200,14 +1284,30 @@ def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen,
             )
         except urllib.error.HTTPError as exc:
             if exc.code == 304:
-                return FetchResult(None, "unchanged", {}, source["url"])
+                return FetchResult(None, "unchanged", {}, source["url"],
+                                   outcome="unchanged")
             raise
         events, kind, parsed_url = _parse_response(data, headers, final_url, opener, source)
         if events or kind != "unsupported":
-            return FetchResult(events, kind, headers, parsed_url)
+            return FetchResult(events, kind, headers, parsed_url,
+                               outcome="events" if events else "empty")
 
         text = data.decode("utf-8-sig", errors="replace")
         source_type = source["source_type"] if "source_type" in source.keys() else "venue"
+        seated_id = _seated_artist_id(text)
+        if seated_id:
+            try:
+                api_data = _seated_request(seated_id, opener=opener)
+            except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError):
+                api_data = None
+            if api_data is not None:
+                recognized, events = parse_seated_api(
+                    api_data.decode("utf-8-sig", errors="replace"),
+                    source.get("name") if isinstance(source, dict) else source["name"])
+                if recognized:
+                    return FetchResult(
+                        events, "seated-api", headers, final_url,
+                        outcome="events" if events else "empty")
         if (source_type == "performer"
                 and urllib.parse.urlsplit(final_url).netloc.endswith("punchup.live")):
             performer_id = _punchup_profile_id(text, final_url)
@@ -1241,8 +1341,10 @@ def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen,
                 body = api_data.decode("utf-8-sig", errors="replace")
                 if _is_bandsintown_event_list(body):
                     name = source.get("name") if isinstance(source, dict) else source["name"]
-                    return FetchResult(parse_bandsintown_api(body, name),
-                                       "bandsintown-api", headers, final_url)
+                    events = parse_bandsintown_api(body, name)
+                    return FetchResult(
+                        events, "bandsintown-api", headers, final_url,
+                        outcome="events" if events else "empty")
         bandsintown = _bandsintown_config(text)
         if bandsintown:
             artist, app_id = bandsintown
@@ -1255,11 +1357,14 @@ def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen,
                 # retain the normal fallback path instead of failing the source.
                 api_data = None
             if api_data is not None:
-                events = parse_bandsintown_api(
-                    api_data.decode("utf-8-sig", errors="replace"), source.get("name")
-                    if isinstance(source, dict) else source["name"])
-                if events:
-                    return FetchResult(events, "bandsintown-api", headers, final_url)
+                body = api_data.decode("utf-8-sig", errors="replace")
+                if _is_bandsintown_event_list(body):
+                    events = parse_bandsintown_api(
+                        body, source.get("name")
+                        if isinstance(source, dict) else source["name"])
+                    return FetchResult(
+                        events, "bandsintown-api", headers, final_url,
+                        outcome="events" if events else "empty")
         last_headers, last_final_url, last_text = headers, final_url, text
         redirected = final_url.rstrip("/") != request_url.rstrip("/")
         incomplete = "<title" not in text.lower() or "</html>" not in text.lower()
@@ -1307,9 +1412,10 @@ def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen,
     if isinstance(output, dict):
         events = _events_from_model(output, page_text, links, last_final_url, model)
         return FetchResult(events, kind, last_headers, last_final_url,
-                           digest, raw_output, model)
+                           digest, raw_output, model,
+                           "events" if events else "unsupported")
     return FetchResult([], "unsupported", last_headers, last_final_url,
-                       digest)
+                       digest, outcome="unsupported")
 
 
 def _stable_post_id(source_id: int, external_id: str) -> str:
@@ -1425,6 +1531,243 @@ def recalculate_performer(conn: sqlite3.Connection, source_id: int) -> int:
     return changed
 
 
+def website_series_key(title: str | None, starts_at: str,
+                       permalink: str | None) -> str:
+    """Return a conservative identity for date-shaped website occurrences.
+
+    A repeated title alone is not enough: performer feeds deliberately repeat
+    the artist name for every tour stop, and venues may reuse generic titles.
+    We only propose a series when removing this occurrence's exact date changes
+    its permalink. Both date layouts currently seen in venue calendars are
+    supported (``2026-08-05`` and ``08-05-2026``).
+    """
+    title_key = dedupe.normalize_title(title)
+    try:
+        day = dt.date.fromisoformat((starts_at or "")[:10])
+    except ValueError:
+        return ""
+    if not title_key or not permalink:
+        return ""
+    parsed = urllib.parse.urlsplit(permalink)
+    path = urllib.parse.unquote(parsed.path).casefold()
+    tokens = {
+        day.isoformat(),
+        f"{day.month:02d}-{day.day:02d}-{day.year:04d}",
+        f"{day.year:04d}/{day.month:02d}/{day.day:02d}",
+        f"{day.month:02d}/{day.day:02d}/{day.year:04d}",
+    }
+    changed = False
+    for token in sorted(tokens, key=len, reverse=True):
+        path, count = re.subn(rf"(?<!\d){re.escape(token)}(?!\d)", "", path)
+        changed = changed or bool(count)
+    if not changed:
+        return ""
+    # Removing a date from a slug often leaves a dangling hyphen or an empty
+    # path segment. Normalize only that punctuation; the rest of the URL stays
+    # part of the identity and separates unrelated same-title events.
+    path = re.sub(r"[-_]+(?=/|$)", "", path)
+    path = re.sub(r"(?<=/)[-_]+", "", path)
+    path = re.sub(r"/{2,}", "/", path).rstrip("/") or "/"
+    return f"{title_key}|{path}"
+
+
+def refresh_series_candidates(conn: sqlite3.Connection,
+                              source_id: int | None = None) -> int:
+    """Backfill fingerprints, propose repeated venue series, and link approvals.
+
+    ``NULL`` means an older web item has not been checked yet; an empty string
+    records a completed negative check. That makes the existing-install
+    backfill cheap and one-time without adding a separate migration marker.
+    """
+    source_clause = " AND wi.source_id=?" if source_id is not None else ""
+    params = (source_id,) if source_id is not None else ()
+    unchecked = conn.execute(
+        "SELECT wi.id,e.title,e.starts_at,p.permalink,ws.source_type "
+        "FROM web_item wi JOIN event e ON e.id=wi.event_id "
+        "JOIN source_post p ON p.post_id=wi.post_id "
+        "JOIN web_source ws ON ws.id=wi.source_id "
+        f"WHERE wi.series_key IS NULL{source_clause}", params).fetchall()
+    for row in unchecked:
+        key = ("" if row["source_type"] == "performer" else
+               website_series_key(row["title"], row["starts_at"], row["permalink"]))
+        conn.execute("UPDATE web_item SET series_key=? WHERE id=?", (key, row["id"]))
+
+    group_clause = " AND wi.source_id=?" if source_id is not None else ""
+    groups = conn.execute(
+        "SELECT wi.source_id,wi.series_key,MIN(e.title) AS title,"
+        "COUNT(DISTINCT substr(e.starts_at,1,10)) AS occurrence_count "
+        "FROM web_item wi JOIN event e ON e.id=wi.event_id "
+        "JOIN web_source ws ON ws.id=wi.source_id "
+        "WHERE wi.series_key!='' AND ws.source_type='venue'" + group_clause +
+        " GROUP BY wi.source_id,wi.series_key "
+        "HAVING COUNT(DISTINCT substr(e.starts_at,1,10)) >= 2", params).fetchall()
+    now = _now()
+    for group in groups:
+        conn.execute(
+            "INSERT INTO web_series_candidate "
+            "(source_id,series_key,title,status,occurrence_count,created_at,updated_at) "
+            "VALUES (?,?,?,'proposed',?,?,?) "
+            "ON CONFLICT(source_id,series_key) DO UPDATE SET "
+            "title=excluded.title,occurrence_count=excluded.occurrence_count,"
+            "updated_at=excluded.updated_at",
+            (group["source_id"], group["series_key"], group["title"],
+             group["occurrence_count"], now, now))
+
+    # A confirmed decision is durable. Any later dates carrying its fingerprint
+    # inherit the same series as soon as a website poll stores them.
+    confirmed_clause = " AND c.source_id=?" if source_id is not None else ""
+    for candidate in conn.execute(
+            "SELECT c.source_id,c.series_key,c.series_id FROM web_series_candidate c "
+            "WHERE c.status='confirmed' AND c.series_id IS NOT NULL" + confirmed_clause,
+            params):
+        conn.execute(
+            "UPDATE event SET occurrence_of=? WHERE id IN "
+            "(SELECT event_id FROM web_item WHERE source_id=? AND series_key=?)",
+            (candidate["series_id"], candidate["source_id"], candidate["series_key"]))
+    return len(groups)
+
+
+def decide_series_candidate(conn: sqlite3.Connection, candidate_id: int,
+                            decision: str, hide: bool = False) -> sqlite3.Row | None:
+    """Confirm or reject an inferred series and persist the user's decision."""
+    if decision not in ("confirm", "reject"):
+        raise ValueError("unknown series decision")
+    candidate = conn.execute(
+        "SELECT * FROM web_series_candidate WHERE id=?", (candidate_id,)).fetchone()
+    if candidate is None:
+        return None
+    now = _now()
+    if decision == "reject":
+        conn.execute(
+            "UPDATE web_series_candidate SET status='rejected',updated_at=? WHERE id=?",
+            (now, candidate_id))
+        return candidate
+
+    series_id = candidate["series_id"]
+    if series_id is None:
+        sample = conn.execute(
+            "SELECT e.title,e.venue_key,MAX(substr(e.starts_at,1,10)) AS horizon "
+            "FROM web_item wi JOIN event e ON e.id=wi.event_id "
+            "WHERE wi.source_id=? AND wi.series_key=?",
+            (candidate["source_id"], candidate["series_key"])).fetchone()
+        series_id = conn.execute(
+            "INSERT INTO series (title,venue_key,kind,rule,horizon_until,is_hidden,created_at) "
+            "VALUES (?,?,'recurring','confirmed website pattern',?,?,?)",
+            (sample["title"] or candidate["title"], sample["venue_key"],
+             sample["horizon"], int(hide), now)).lastrowid
+    elif hide:
+        conn.execute("UPDATE series SET is_hidden=1 WHERE id=?", (series_id,))
+    conn.execute(
+        "UPDATE web_series_candidate SET status='confirmed',series_id=?,updated_at=? WHERE id=?",
+        (series_id, now, candidate_id))
+    conn.execute(
+        "UPDATE event SET occurrence_of=? WHERE id IN "
+        "(SELECT event_id FROM web_item WHERE source_id=? AND series_key=?)",
+        (series_id, candidate["source_id"], candidate["series_key"]))
+    return conn.execute(
+        "SELECT * FROM web_series_candidate WHERE id=?", (candidate_id,)).fetchone()
+
+
+def remove_source(conn: sqlite3.Connection, source_id: int) -> dict | None:
+    """Remove a website source and the data owned only by that source.
+
+    Dedupe may have made a website row canonical while attaching Instagram or
+    another calendar as supporting provenance. Those shared events survive: we
+    move their links back to the remaining source's original event row before
+    deleting the website-owned record.
+    """
+    source = conn.execute("SELECT * FROM web_source WHERE id=?", (source_id,)).fetchone()
+    if source is None:
+        return None
+    item_rows = conn.execute(
+        "SELECT post_id,event_id FROM web_item WHERE source_id=?", (source_id,)).fetchall()
+    post_ids = {row["post_id"] for row in item_rows}
+    affected_ids = {row["event_id"] for row in item_rows}
+    if post_ids:
+        marks = ",".join("?" * len(post_ids))
+        affected_ids.update(row[0] for row in conn.execute(
+            f"SELECT id FROM event WHERE post_id IN ({marks})", tuple(post_ids)))
+        affected_ids.update(row[0] for row in conn.execute(
+            f"SELECT event_id FROM event_source WHERE source_kind='website' "
+            f"AND source_item_id IN ({marks})", tuple(post_ids)))
+    series_ids = [row[0] for row in conn.execute(
+        "SELECT series_id FROM web_series_candidate "
+        "WHERE source_id=? AND series_id IS NOT NULL", (source_id,))]
+
+    # Remove the source's provenance first. Remaining links below are the exact
+    # evidence used to decide whether a displayed event must survive.
+    if post_ids:
+        marks = ",".join("?" * len(post_ids))
+        conn.execute(
+            f"DELETE FROM event_source WHERE source_kind='website' "
+            f"AND source_item_id IN ({marks})", tuple(post_ids))
+    conn.execute("DELETE FROM alert_delivery WHERE source_id=?", (source_id,))
+    conn.execute("DELETE FROM web_parse_cache WHERE source_id=?", (source_id,))
+    conn.execute("DELETE FROM web_item WHERE source_id=?", (source_id,))
+    conn.execute("DELETE FROM web_series_candidate WHERE source_id=?", (source_id,))
+    if series_ids:
+        marks = ",".join("?" * len(series_ids))
+        conn.execute(f"UPDATE event SET occurrence_of=NULL WHERE occurrence_of IN ({marks})",
+                     tuple(series_ids))
+
+    deleted_events = shared_events = 0
+    for event_id in affected_ids:
+        event = conn.execute("SELECT id,post_id FROM event WHERE id=?", (event_id,)).fetchone()
+        if event is None:
+            continue
+        remaining = conn.execute(
+            "SELECT source_item_id FROM event_source WHERE event_id=? ORDER BY id",
+            (event_id,)).fetchall()
+        if event["post_id"] not in post_ids:
+            shared_events += 1
+            continue
+        if not remaining:
+            conn.execute("DELETE FROM event WHERE id=?", (event_id,))
+            deleted_events += 1
+            continue
+
+        replacement_post = next((row["source_item_id"] for row in remaining
+                                 if conn.execute("SELECT 1 FROM source_post WHERE post_id=?",
+                                                 (row["source_item_id"],)).fetchone()), None)
+        if replacement_post is None:
+            # Defensive fallback for stale provenance: without a surviving raw
+            # source row the event cannot satisfy its post_id foreign key.
+            conn.execute("DELETE FROM event_source WHERE event_id=?", (event_id,))
+            conn.execute("DELETE FROM event WHERE id=?", (event_id,))
+            deleted_events += 1
+            continue
+        replacement_event = conn.execute(
+            "SELECT id FROM event WHERE post_id=? AND id!=? ORDER BY id LIMIT 1",
+            (replacement_post, event_id)).fetchone()
+        if replacement_event:
+            target = replacement_event["id"]
+            conn.execute("UPDATE event_source SET event_id=? WHERE event_id=?", (target, event_id))
+            conn.execute("UPDATE web_item SET event_id=? WHERE event_id=?", (target, event_id))
+            conn.execute("DELETE FROM event WHERE id=?", (event_id,))
+            deleted_events += 1
+        else:
+            conn.execute(
+                "UPDATE event SET post_id=?,extraction_id=NULL WHERE id=?",
+                (replacement_post, event_id))
+        shared_events += 1
+
+    if post_ids:
+        marks = ",".join("?" * len(post_ids))
+        conn.execute(f"DELETE FROM extraction WHERE post_id IN ({marks})", tuple(post_ids))
+        conn.execute(f"DELETE FROM source_post WHERE post_id IN ({marks})", tuple(post_ids))
+    for series_id in series_ids:
+        conn.execute("DELETE FROM series WHERE id=? AND NOT EXISTS "
+                     "(SELECT 1 FROM event WHERE occurrence_of=series.id)", (series_id,))
+    conn.execute("DELETE FROM web_source WHERE id=?", (source_id,))
+
+    # Canonical flags may have pointed at a deleted website record. Recompute
+    # them after links have moved back to the sources that remain.
+    from . import pipeline
+    pipeline.rebuild_dedupe(conn)
+    return {"source": source["name"], "items": len(item_rows),
+            "events_deleted": deleted_events, "shared_events_kept": shared_events}
+
+
 def _upsert_event(conn: sqlite3.Connection, source, event: StructuredEvent,
                   seen_at: str, in_range: bool = True,
                   distance_miles: float | None = None) -> tuple[bool, bool]:
@@ -1438,6 +1781,8 @@ def _upsert_event(conn: sqlite3.Connection, source, event: StructuredEvent,
     is_model = (event.raw or {}).get("parser") == "nano-html"
     reasoning = ("AI extraction from visible website text" if is_model
                  else "Structured website calendar data")
+    series_key = ("" if source["source_type"] == "performer" else
+                  website_series_key(event.title, event.starts_at, event.permalink))
     # Performer sources cache nationwide dates, but only nearby shows are
     # displayed. Do not download artwork for invisible events.
     local_images = _event_images(event) if in_range else []
@@ -1445,8 +1790,9 @@ def _upsert_event(conn: sqlite3.Connection, source, event: StructuredEvent,
 
     if existing:
         conn.execute(
-            "UPDATE web_item SET last_seen_at=?, content_hash=?, in_range=?, distance_miles=? WHERE id=?",
-            (seen_at, digest, int(in_range), distance_miles, existing["id"]))
+            "UPDATE web_item SET last_seen_at=?,content_hash=?,in_range=?,distance_miles=?,"
+            "series_key=? WHERE id=?",
+            (seen_at, digest, int(in_range), distance_miles, series_key, existing["id"]))
         if existing["content_hash"] == digest:
             return False, False
         conn.execute(
@@ -1490,9 +1836,9 @@ def _upsert_event(conn: sqlite3.Connection, source, event: StructuredEvent,
          event.ticket_url, event.ticket_status, seen_at)).lastrowid
     conn.execute(
         "INSERT INTO web_item (source_id,external_id,post_id,event_id,content_hash,in_range,"
-        "distance_miles,first_seen_at,last_seen_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        "distance_miles,series_key,first_seen_at,last_seen_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
         (source["id"], event.external_id, post_id, event_id, digest, int(in_range),
-         distance_miles, seen_at, seen_at))
+         distance_miles, series_key, seen_at, seen_at))
     conn.execute(
         "INSERT OR IGNORE INTO event_source (event_id,source_kind,source_item_id,permalink,"
         "match_method,created_at) VALUES (?,'website',?,?,?,?)",
@@ -1528,7 +1874,7 @@ def poll_source(conn: sqlite3.Connection, source_id: int,
                 "model=excluded.model,raw_output=excluded.raw_output,created_at=excluded.created_at",
                 (source_id, result.content_hash, WEBSITE_PROMPT_VERSION,
                  result.model or "nano", result.model_output, checked))
-        if not events:
+        if not events and result.outcome != "empty":
             suffix = ("; AI fallback is unavailable because OPENAI_API_KEY is not set"
                       if extractor is None else "; AI fallback found no verifiable events")
             raise ValueError(
@@ -1554,16 +1900,18 @@ def poll_source(conn: sqlite3.Connection, source_id: int,
                 alerts += int(notifications.enqueue(
                     conn, source_id, event.external_id, item["content_hash"], alert_kind,
                     event.title or source["name"], f"{when} · {where}", event.ticket_url or event.permalink))
+        refresh_series_candidates(conn, source_id)
         conn.execute(
             "UPDATE web_source SET format=?,etag=?,last_modified=?,last_checked_at=?,"
-            "last_success_at=?,last_error=NULL WHERE id=?",
+            "last_success_at=?,last_error=NULL,last_result=? WHERE id=?",
             (kind, headers.get("etag"), headers.get("last-modified"), checked, checked,
-             source_id))
+             result.outcome, source_id))
         return {"source": source["name"], "found": len(events), "new": made,
-                "updated": updated, "alerts": alerts, "unchanged": False}
+                "updated": updated, "alerts": alerts, "unchanged": False,
+                "empty": result.outcome == "empty"}
     except Exception as exc:
         conn.execute(
-            "UPDATE web_source SET last_checked_at=?,last_error=? WHERE id=?",
+            "UPDATE web_source SET last_checked_at=?,last_error=?,last_result='error' WHERE id=?",
             (checked, f"{type(exc).__name__}: {exc}", source_id))
         return {"source": source["name"], "found": 0, "new": 0, "updated": 0,
                 "error": f"{type(exc).__name__}: {exc}"}

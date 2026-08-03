@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the app and wrap it in a drag-to-Applications disk image.
 #
-#     ./make_dmg.sh              -> dist/Instagram Calendar.dmg
+#     ./make_dmg.sh              -> dist/LoCal.dmg
 #
 # hdiutil rather than create-dmg: hdiutil ships with macOS, and the fancy part
 # create-dmg adds (background art, positioned icons) is a .DS_Store baked by
@@ -14,7 +14,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP_NAME="Instagram Calendar"
+APP_NAME="LoCal"
 APP="dist/${APP_NAME}.app"
 DMG="dist/${APP_NAME}.dmg"
 STAGE="build/dmg"
@@ -34,7 +34,7 @@ if [ "${1:-}" != "--no-build" ]; then
     echo "==> Drawing AppIcon.icns"
     "$CALENDAR_PYTHON" make_icon.py
     echo "==> Building ${APP_NAME}.app"
-    "$CALENDAR_PYINSTALLER" --noconfirm InstagramCalendar.spec
+    "$CALENDAR_PYINSTALLER" --noconfirm LoCal.spec
 fi
 
 [ -d "$APP" ] || { echo "error: $APP not found (run without --no-build)" >&2; exit 1; }

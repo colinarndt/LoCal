@@ -122,12 +122,12 @@ def _install_main_menu(app) -> None:
     main = NSMenu.alloc().initWithTitle_("Main Menu")
 
     app_root = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-        "Instagram Calendar", None, "")
+        "LoCal", None, "")
     main.addItem_(app_root)
-    app_menu = NSMenu.alloc().initWithTitle_("Instagram Calendar")
+    app_menu = NSMenu.alloc().initWithTitle_("LoCal")
     app_root.setSubmenu_(app_menu)
     app_menu.addItem_(NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-        "Quit Instagram Calendar", "terminate:", "q"))
+        "Quit LoCal", "terminate:", "q"))
 
     edit_root = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
         "Edit", None, "")
@@ -186,7 +186,7 @@ class AppDelegate(NSObject):
         self.status_item = bar.statusItemWithLength_(NSVariableStatusItemLength)
         button = self.status_item.button()
         icon = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
-            "calendar", "Instagram Calendar")
+            "calendar", "LoCal")
         if icon is not None:
             icon.setTemplate_(True)      # tints itself for light/dark menu bars
             button.setImage_(icon)
@@ -520,13 +520,26 @@ class AppDelegate(NSObject):
         while not self._stop.is_set():
             try:
                 with db.session(web.app.config["DB"]) as conn:
-                    overdue = scheduler.due(conn)
-                    performer_ids = scheduler.due_performer_source_ids(conn)
+                    cfg = config.load()
+                    overdue = scheduler.due(
+                        conn, cfg["instagram_refresh_hours"])
+                    venue_ids = scheduler.due_venue_source_ids(
+                        conn, cfg["venue_refresh_hours"])
+                    performer_ids = scheduler.due_performer_source_ids(
+                        conn, cfg["performer_refresh_hours"])
                 if web.JOB["state"] != "running":
-                    if overdue:
-                        self._start_run("scheduled")
-                    elif performer_ids:
-                        self._start_run("performer check", performer_ids, include_accounts=False)
+                    website_ids = venue_ids + performer_ids
+                    if overdue or website_ids:
+                        due_kinds = []
+                        if overdue:
+                            due_kinds.append("Instagram")
+                        if venue_ids:
+                            due_kinds.append("venue")
+                        if performer_ids:
+                            due_kinds.append("performer")
+                        self._start_run(
+                            f"scheduled {' + '.join(due_kinds)} check",
+                            website_ids, include_accounts=overdue)
             except Exception as exc:
                 # A scheduler thread that dies takes the daily run with it and
                 # says nothing, which is the worst available outcome.

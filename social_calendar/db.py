@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS series (
     kind          TEXT NOT NULL,           -- run | recurring
     rule          TEXT,                    -- human-readable
     horizon_until TEXT,                    -- occurrences generated through this date
+    is_hidden     INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL
 );
 
@@ -105,6 +106,7 @@ CREATE TABLE IF NOT EXISTS web_source (
     last_checked_at TEXT,
     last_success_at TEXT,
     last_error      TEXT,
+    last_result     TEXT,                    -- events | empty | error
     source_type     TEXT NOT NULL DEFAULT 'venue', -- venue | performer
     radius_miles    REAL,
     notify          INTEGER NOT NULL DEFAULT 0,
@@ -120,11 +122,29 @@ CREATE TABLE IF NOT EXISTS web_item (
     content_hash TEXT NOT NULL,
     in_range     INTEGER NOT NULL DEFAULT 1,
     distance_miles REAL,
+    series_key   TEXT,                    -- NULL until checked; '' means not series-shaped
     first_seen_at TEXT NOT NULL,
     last_seen_at  TEXT NOT NULL,
     UNIQUE(source_id, external_id)
 );
 CREATE INDEX IF NOT EXISTS ix_web_item_source ON web_item(source_id);
+
+-- Website calendars often publish each occurrence as an independent Event and
+-- omit RRULE/recurrence metadata. Date-shaped permalinks let us propose a
+-- relationship, but the user confirms or rejects it before it becomes a series.
+CREATE TABLE IF NOT EXISTS web_series_candidate (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id        INTEGER NOT NULL REFERENCES web_source(id),
+    series_key       TEXT NOT NULL,
+    title            TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'proposed', -- proposed | confirmed | rejected
+    series_id        INTEGER REFERENCES series(id),
+    occurrence_count INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    UNIQUE(source_id, series_key)
+);
+CREATE INDEX IF NOT EXISTS ix_web_series_status ON web_series_candidate(status);
 
 CREATE TABLE IF NOT EXISTS location_cache (
     location_key TEXT PRIMARY KEY,
@@ -231,8 +251,11 @@ MIGRATIONS = [
     "ALTER TABLE web_source ADD COLUMN source_type TEXT NOT NULL DEFAULT 'venue'",
     "ALTER TABLE web_source ADD COLUMN radius_miles REAL",
     "ALTER TABLE web_source ADD COLUMN notify INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE web_source ADD COLUMN last_result TEXT",
     "ALTER TABLE web_item ADD COLUMN in_range INTEGER NOT NULL DEFAULT 1",
     "ALTER TABLE web_item ADD COLUMN distance_miles REAL",
+    "ALTER TABLE web_item ADD COLUMN series_key TEXT",
+    "ALTER TABLE series ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE event ADD COLUMN location_city TEXT",
     "ALTER TABLE event ADD COLUMN location_region TEXT",
     "ALTER TABLE event ADD COLUMN location_lat REAL",
@@ -274,6 +297,12 @@ def connect(path: Path | str = DB_PATH) -> sqlite3.Connection:
         except sqlite3.OperationalError as exc:
             if "duplicate column" not in str(exc):
                 raise
+    # Classify website rows from older installs once. New polls set series_key
+    # as they write, while NULL marks only records that predate this feature.
+    if conn.execute("SELECT 1 FROM web_item WHERE series_key IS NULL LIMIT 1").fetchone():
+        from . import websites
+        websites.refresh_series_candidates(conn)
+        conn.commit()
     # Existing installs predate event_source. Backfill once so their source
     # counts and future cross-source matches work without re-extraction.
     if (conn.execute("SELECT COUNT(*) FROM event_source").fetchone()[0] == 0

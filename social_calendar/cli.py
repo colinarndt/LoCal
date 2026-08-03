@@ -37,7 +37,7 @@ def _extractor(rung: int):
     from .extract import RUNGS, Extractor
 
     if not os.getenv("OPENAI_API_KEY"):
-        sys.exit("OPENAI_API_KEY not set.\n  Run `python -m social_calendar.cli init`, or set it in .env.")
+        sys.exit("OPENAI_API_KEY not set.\n  Run `local-calendar init`, or set it in .env.")
     if rung != 1:
         print(f"  !! rung {rung} ({RUNGS[rung]}) is an ESCALATION above the Phase 0 "
               f"production config. Only run with explicit approval.")
@@ -54,7 +54,7 @@ def cmd_init(args) -> None:
     _env()
     from . import config
 
-    print("\nsocial-calendar setup\n" + "-" * 21)
+    print("\nlocal-calendar setup\n" + "-" * 21)
     cfg = config.load()
 
     # --- city -------------------------------------------------------------
@@ -120,8 +120,8 @@ def cmd_init(args) -> None:
             print(f"    @{c['handle']} — {c.get('why','')}")
 
     print("\nDone. Next:")
-    print("  python -m social_calendar.web            # then open /discover to approve accounts")
-    print("  python -m social_calendar.cli run-once   # scrape + extract (COSTS MONEY)")
+    print("  local-calendar-web          # then open /discover to approve accounts")
+    print("  local-calendar run-once     # scrape + extract (COSTS MONEY)")
 
 
 def cmd_run_once(args) -> None:
@@ -136,8 +136,8 @@ def cmd_run_once(args) -> None:
         if not handles and not website_ids and not args.accounts:
             sys.exit(
                 "No Instagram accounts or websites are followed yet.\n"
-                "  python -m social_calendar.cli init          # setup, incl. suggestions\n"
-                "  python -m social_calendar.web               # add sources at /discover\n"
+                "  local-calendar init          # setup, incl. suggestions\n"
+                "  local-calendar-web           # add sources at /discover\n"
                 f"  ...or seed from a file: --accounts {ACCOUNTS.name}")
         if not handles and args.accounts:
             handles = read_accounts(Path(args.accounts))
@@ -151,7 +151,7 @@ def cmd_run_once(args) -> None:
     if handles:
         token = os.getenv("APIFY_TOKEN")
         if not token:
-            sys.exit("APIFY_TOKEN not set.\n  Run `python -m social_calendar.cli init`, or set it in .env.")
+            sys.exit("APIFY_TOKEN not set.\n  Run `local-calendar init`, or set it in .env.")
         source = ApifySource(token)
         extractor = _extractor(args.rung)
     elif website_ids and os.getenv("OPENAI_API_KEY"):
@@ -199,7 +199,7 @@ def cmd_import_spike(args) -> None:
             f"No Phase 0 corpus at {posts}.\n"
             "This command replays the author's local scrape, which is not "
             "redistributable and is not in the repo.\n"
-            "Start with: python -m social_calendar.cli init")
+            "Start with: local-calendar init")
     handles = read_accounts(Path(args.accounts))
     src = LocalSpikeSource(posts)
     with db.session(args.db) as conn:
@@ -347,7 +347,7 @@ def _avatars_cmd(args) -> None:
     _env()
     token = os.getenv("APIFY_TOKEN")
     if not token:
-        sys.exit("APIFY_TOKEN not set.\n  Run `python -m social_calendar.cli init`, or set it in .env.")
+        sys.exit("APIFY_TOKEN not set.\n  Run `local-calendar init`, or set it in .env.")
     from apify_client import ApifyClient
 
     with db.session(args.db) as conn:
@@ -363,7 +363,7 @@ def _geocode_cmd(args) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(prog="social-calendar")
+    ap = argparse.ArgumentParser(prog="local-calendar")
     ap.add_argument("--db", default=str(db.DB_PATH))
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -417,7 +417,7 @@ def main() -> None:
     if args.func is not cmd_migrate and migrate.pending():
         print(f"  !! found an in-tree install at {migrate.SOURCE_ROOT / 'data'} that has not "
               f"moved to {paths.HOME}.\n"
-              f"     Run `social-calendar migrate` first, or this run starts from empty.\n",
+              f"     Run `local-calendar migrate` first, or this run starts from empty.\n",
               file=sys.stderr)
     args.func(args)
 

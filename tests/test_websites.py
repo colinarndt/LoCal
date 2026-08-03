@@ -60,6 +60,11 @@ WIDGET_BANDSINTOWN = """<!doctype html><html><body>
 <a class="bit-widget-initializer" data-artist-name="id_15537640"></a>
 </body></html>"""
 
+SEATED_WIDGET = """<!doctype html><html><body>
+<div id="seated-55fdf2c0" data-artist-id="77b8f5ef-877c-470f-b5e6-e460d57359b2"></div>
+<script src="https://widget.seated.com/app.js"></script>
+</body></html>"""
+
 NO_UPCOMING_DATES = """<!doctype html><html><body>
 <main><h1>Tour Dates</h1><p>No upcoming tour dates right now. Check back soon.</p></main>
 </body></html>"""
@@ -317,6 +322,101 @@ def test_standard_bandsintown_widget_uses_its_site_scoped_public_feed():
     assert events[0].external_id == "bandsintown:108330615"
 
 
+def test_empty_bandsintown_feed_is_a_successful_empty_schedule():
+    def opener(request, timeout=30):
+        body = "[]" if "/V3.1/artists/id_15537640/events" in request.full_url else WIDGET_BANDSINTOWN
+        return Response(body, request.full_url)
+
+    result = websites.fetch_events({
+        "url": "https://anginedepoitrine.com/en/pages/concerts", "name": "Angine de Poitrine",
+        "source_type": "performer", "etag": None, "last_modified": None,
+    }, opener=opener)
+
+    assert result.events == []
+    assert result.kind == "bandsintown-api"
+    assert result.outcome == "empty"
+
+
+def test_empty_seated_feed_is_a_successful_empty_schedule():
+    feed = json.dumps({
+        "data": {
+            "type": "tours", "id": "artist-1",
+            "attributes": {"name": "Louis C.K."},
+            "relationships": {"tour-events": {"data": []}},
+        },
+        "jsonapi": {"version": "1.0"},
+    })
+    requests = []
+
+    def opener(request, timeout=30):
+        requests.append(request)
+        body = feed if request.full_url.startswith("https://cdn.seated.com/api/tour/") else SEATED_WIDGET
+        return Response(body, request.full_url)
+
+    result = websites.fetch_events({
+        "url": "https://louisck.com/pages/tickets", "name": "Louis CK",
+        "source_type": "performer", "etag": None, "last_modified": None,
+    }, opener=opener)
+
+    assert result.events == []
+    assert result.kind == "seated-api"
+    assert result.outcome == "empty"
+    api_headers = dict(requests[-1].header_items())
+    assert api_headers["Accept"] == "application/vnd.api+json"
+    assert api_headers["X-client-version"] == "HEAD"
+
+
+def test_seated_feed_imports_future_tour_dates():
+    event_id = "a94a2361-1964-4fa0-97b5-e2ec95612de1"
+    feed = json.dumps({
+        "data": {
+            "type": "tours", "id": "artist-1",
+            "attributes": {
+                "name": "Louis C.K.",
+                "image-url": "https://images.example/louis.jpg",
+            },
+            "relationships": {
+                "tour-events": {"data": [{"type": "tour-events", "id": event_id}]},
+            },
+        },
+        "included": [{
+            "type": "tour-events", "id": event_id,
+            "attributes": {
+                "starts-at-date-local": "2026-10-08T20:00:00",
+                "ends-at-date-local": None,
+                "is-starts-at-known": True,
+                "venue-name": "Example Theater",
+                "formatted-address": "Charlotte, NC",
+                "details": "Working out new stand-up material",
+                "is-sold-out": False,
+            },
+        }],
+    })
+
+    def opener(request, timeout=30):
+        body = feed if request.full_url.startswith("https://cdn.seated.com/api/tour/") else SEATED_WIDGET
+        return Response(body, request.full_url)
+
+    result = websites.fetch_events({
+        "url": "https://louisck.com/pages/tickets", "name": "Louis CK",
+        "source_type": "performer", "etag": None, "last_modified": None,
+    }, opener=opener)
+
+    assert result.kind == "seated-api"
+    assert result.outcome == "events"
+    assert len(result.events) == 1
+    event = result.events[0]
+    assert event.external_id == f"seated:{event_id}"
+    assert event.title == "Louis C.K."
+    assert event.starts_at == "2026-10-08T20:00:00"
+    assert event.start_time_known is True
+    assert event.venue_name == "Example Theater"
+    assert event.address == "Charlotte, NC"
+    assert event.ticket_url == f"https://link.seated.com/{event_id}"
+    assert event.ticket_status == "tickets"
+    assert event.image_url == "https://images.example/louis.jpg"
+
+
 def test_web_event_image_is_stored_with_the_source_post(tmp_path, monkeypatch):
     conn = db.connect(":memory:")
     source_id = websites.add_source(conn, "https://venue.example/events", "Venue")
@@ -332,24 +432,158 @@ def test_web_event_image_is_stored_with_the_source_post(tmp_path, monkeypatch):
     assert conn.execute("SELECT local_images FROM source_post").fetchone()[0] == '["web-poster.jpg"]'
 
 
+def _store_dated_web_event(conn, source_id, title, day, url):
+    source = conn.execute("SELECT * FROM web_source WHERE id=?", (source_id,)).fetchone()
+    event = websites.StructuredEvent(
+        external_id=url, title=title, starts_at=day, start_time_known=False,
+        venue_name=None, permalink=url)
+    websites._upsert_event(conn, source, event, "2026-08-02T12:00:00+00:00")
+
+
+def test_website_series_key_requires_the_occurrence_date_in_the_permalink():
+    hours_a = websites.website_series_key(
+        "Hours of Operation", "2026-08-02",
+        "https://whitewater.org/event/hours-of-operation-08-02-2026/")
+    hours_b = websites.website_series_key(
+        "Hours of Operation", "2026-08-03",
+        "https://whitewater.org/event/hours-of-operation-08-03-2026/")
+    learners_a = websites.website_series_key(
+        "Little Learners", "2026-08-05",
+        "https://whitewater.org/event/little-learners-3/2026-08-05/")
+    learners_b = websites.website_series_key(
+        "Little Learners", "2026-08-12",
+        "https://whitewater.org/event/little-learners-3/2026-08-12/")
+
+    assert hours_a == hours_b
+    assert learners_a == learners_b
+    assert websites.website_series_key(
+        "Labor Day Celebration", "2026-09-05",
+        "https://whitewater.org/event/labor-day-at-wildwoods/") == ""
+
+
+def test_repeated_date_urls_are_proposed_not_grouped_until_user_confirms():
+    conn = db.connect(":memory:")
+    source_id = websites.add_source(conn, "https://whitewater.org/calendar", "WWC")
+    for day in ("2026-08-02", "2026-08-03"):
+        m, d = day[5:7], day[8:10]
+        url = f"https://whitewater.org/event/hours-of-operation-{m}-{d}-2026/"
+        _store_dated_web_event(conn, source_id, "Hours of Operation", day, url)
+
+    websites.refresh_series_candidates(conn, source_id)
+
+    candidate = conn.execute("SELECT * FROM web_series_candidate").fetchone()
+    assert candidate["status"] == "proposed"
+    assert candidate["occurrence_count"] == 2
+    assert conn.execute(
+        "SELECT COUNT(*) FROM event WHERE occurrence_of IS NOT NULL").fetchone()[0] == 0
+
+
+def test_confirmed_hidden_series_catches_existing_and_future_occurrences():
+    conn = db.connect(":memory:")
+    source_id = websites.add_source(conn, "https://whitewater.org/calendar", "WWC")
+    for day in ("2026-08-02", "2026-08-03"):
+        m, d = day[5:7], day[8:10]
+        url = f"https://whitewater.org/event/hours-of-operation-{m}-{d}-2026/"
+        _store_dated_web_event(conn, source_id, "Hours of Operation", day, url)
+    websites.refresh_series_candidates(conn, source_id)
+    candidate_id = conn.execute("SELECT id FROM web_series_candidate").fetchone()[0]
+
+    candidate = websites.decide_series_candidate(conn, candidate_id, "confirm", hide=True)
+    series_id = candidate["series_id"]
+    assert conn.execute("SELECT is_hidden FROM series WHERE id=?", (series_id,)).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM event WHERE occurrence_of=?", (series_id,)).fetchone()[0] == 2
+
+    url = "https://whitewater.org/event/hours-of-operation-08-04-2026/"
+    _store_dated_web_event(conn, source_id, "Hours of Operation", "2026-08-04", url)
+    websites.refresh_series_candidates(conn, source_id)
+
+    assert conn.execute(
+        "SELECT occurrence_of FROM event WHERE starts_at='2026-08-04'").fetchone()[0] == series_id
+
+
+def test_rejected_series_decision_and_performer_exclusion_are_persistent():
+    conn = db.connect(":memory:")
+    venue_id = websites.add_source(conn, "https://venue.example/calendar", "Venue")
+    for day in ("2026-08-02", "2026-08-03"):
+        _store_dated_web_event(
+            conn, venue_id, "Daily doors", day,
+            f"https://venue.example/daily-doors-{day}/")
+    websites.refresh_series_candidates(conn, venue_id)
+    candidate_id = conn.execute("SELECT id FROM web_series_candidate").fetchone()[0]
+    websites.decide_series_candidate(conn, candidate_id, "reject")
+    _store_dated_web_event(
+        conn, venue_id, "Daily doors", "2026-08-04",
+        "https://venue.example/daily-doors-2026-08-04/")
+    websites.refresh_series_candidates(conn, venue_id)
+    assert conn.execute(
+        "SELECT status FROM web_series_candidate WHERE id=?", (candidate_id,)).fetchone()[0] == "rejected"
+
+    performer_id = websites.add_source(
+        conn, "https://artist.example/tour", "Artist", source_type="performer")
+    for day in ("2026-09-01", "2026-09-02"):
+        _store_dated_web_event(
+            conn, performer_id, "Artist", day,
+            f"https://artist.example/tour/artist-{day}/")
+    websites.refresh_series_candidates(conn, performer_id)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM web_series_candidate WHERE source_id=?", (performer_id,)).fetchone()[0] == 0
+
+
 def test_empty_tour_notice_is_a_successful_zero_event_response():
-    events, kind, _, _ = websites.fetch_events({
+    result = websites.fetch_events({
         "url": "https://the-aristocrats.com/shows/", "name": "The Aristocrats",
         "source_type": "performer", "etag": None, "last_modified": None,
     }, opener=opener_for(NO_UPCOMING_DATES))
+    events, kind, _, _ = result
 
     assert kind == "empty-tour-page"
     assert events == []
+    assert result.outcome == "empty"
+
+
+def test_short_empty_tour_notices_do_not_require_check_back_text():
+    for notice in ("There are no upcoming events.", "No Upcoming Tour Dates"):
+        page = f"<!doctype html><html><body><h1>Tickets</h1><p>{notice}</p></body></html>"
+        result = websites.fetch_events({
+            "url": "https://artist.example/tour", "name": "Artist",
+            "source_type": "performer", "etag": None, "last_modified": None,
+        }, opener=opener_for(page))
+
+        assert result.events == []
+        assert result.kind == "empty-tour-page"
+        assert result.outcome == "empty"
 
 
 def test_riverside_empty_upcoming_table_is_a_successful_zero_event_response():
-    events, kind, _, _ = websites.fetch_events({
+    result = websites.fetch_events({
         "url": "https://riversideband.pl/en/gigs", "name": "Riverside",
         "source_type": "performer", "etag": None, "last_modified": None,
     }, opener=opener_for(RIVERSIDE_EMPTY))
+    events, kind, _, _ = result
 
     assert kind == "riverside-events"
     assert events == []
+    assert result.outcome == "empty"
+
+
+def test_poll_records_a_recognized_empty_schedule_as_success():
+    conn = db.connect(":memory:")
+    source_id = websites.add_source(
+        conn, "https://artist.example/tour", "Artist", source_type="performer")
+
+    result = websites.poll_source(conn, source_id, opener_for(NO_UPCOMING_DATES))
+    source = conn.execute(
+        "SELECT format,last_success_at,last_error,last_result FROM web_source WHERE id=?",
+        (source_id,)).fetchone()
+
+    assert result["found"] == 0
+    assert result["empty"] is True
+    assert "error" not in result
+    assert source["format"] == "empty-tour-page"
+    assert source["last_success_at"] is not None
+    assert source["last_error"] is None
+    assert source["last_result"] == "empty"
 
 
 def test_jsonld_event_nested_under_nonstandard_events_key_is_parsed():
@@ -546,11 +780,13 @@ def test_model_fallback_rejects_a_link_not_present_on_the_page():
     extractor.website = hallucinating
     source = {"url": "https://venue.example/events", "etag": None,
               "last_modified": None}
-    events, kind, _, _ = websites.fetch_events(
+    result = websites.fetch_events(
         source, opener_for(UNSTRUCTURED), extractor=extractor)
+    events, kind, _, _ = result
 
     assert kind == "model-html"
     assert events == []
+    assert result.outcome == "unsupported"
 
 
 def test_model_fallback_can_use_the_calendar_page_when_event_has_no_link():
@@ -681,7 +917,59 @@ def test_dedupe_moves_all_provenance_to_the_website_canonical_event():
         "SELECT COUNT(*) FROM event_source WHERE event_id=?", (canonical["id"],)).fetchone()[0] == 2
 
 
-def test_source_page_can_add_and_disable_a_website(tmp_path):
+def test_remove_website_deletes_its_events_candidates_and_raw_rows():
+    conn = db.connect(":memory:")
+    source_id = websites.add_source(conn, "https://venue.example/events", "Venue")
+    for day in ("2026-08-02", "2026-08-03"):
+        _store_dated_web_event(
+            conn, source_id, "Daily doors", day,
+            f"https://venue.example/daily-doors-{day}/")
+    websites.refresh_series_candidates(conn, source_id)
+    candidate_id = conn.execute("SELECT id FROM web_series_candidate").fetchone()[0]
+    websites.decide_series_candidate(conn, candidate_id, "confirm")
+
+    result = websites.remove_source(conn, source_id)
+
+    assert result["items"] == 2
+    assert result["events_deleted"] == 2
+    for table in ("web_source", "web_item", "web_series_candidate", "event",
+                  "event_source", "extraction", "source_post", "series"):
+        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
+def test_remove_website_preserves_an_event_backed_by_instagram():
+    conn = db.connect(":memory:")
+    source_id = websites.add_source(conn, "https://venue.example/events", "Venue")
+    websites.poll_source(conn, source_id,
+                         opener_for(JSONLD % json.dumps(event_payload())))
+    conn.execute(
+        "INSERT INTO source_post (post_id,polled_handle,attributed_handle,posted_at,caption,"
+        "permalink,media_kind,local_images,raw_provider_json,source_name,fetched_at) "
+        "VALUES ('ig-remove','venue','venue','2026-07-20','Tennis',"
+        "'https://instagram.com/p/ig-remove','post','[]','{}','apify','now')")
+    ig_event = conn.execute(
+        "INSERT INTO event (post_id,title,starts_at,start_time_known,venue_name,venue_key,created_at) "
+        "VALUES ('ig-remove','Tennis','2026-08-14T20:00:00',1,'Neighborhood Theatre',"
+        "'neighborhood theatre','now')").lastrowid
+    conn.execute(
+        "INSERT INTO event_source (event_id,source_kind,source_item_id,permalink,match_method,created_at) "
+        "VALUES (?,'instagram','ig-remove','https://instagram.com/p/ig-remove','extracted','now')",
+        (ig_event,))
+    pipeline.rebuild_dedupe(conn)
+
+    result = websites.remove_source(conn, source_id)
+
+    assert result["shared_events_kept"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM web_source").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM event").fetchone()[0] == 1
+    kept = conn.execute(
+        "SELECT e.post_id,e.is_canonical,es.source_kind FROM event e "
+        "JOIN event_source es ON es.event_id=e.id").fetchone()
+    assert dict(kept) == {"post_id": "ig-remove", "is_canonical": 1,
+                          "source_kind": "instagram"}
+
+
+def test_source_page_can_add_disable_and_offer_removal_for_a_website(tmp_path):
     from social_calendar import web
 
     path = tmp_path / "calendar.db"
@@ -702,6 +990,14 @@ def test_source_page_can_add_and_disable_a_website(tmp_path):
     page = client.get("/discover")
     assert page.status_code == 200
     assert b"Example Venue" in page.data
+    assert b'title="pause refreshes but keep imported events"' in page.data
+    assert b'title="remove source and its imported events"' in page.data
+    assert b"Events also backed by Instagram or another website will stay" in page.data
     client.post(f"/discover/website/{source['id']}/disable")
     with db.session(path) as conn:
         assert conn.execute("SELECT enabled FROM web_source").fetchone()[0] == 0
+    response = client.post(f"/discover/website/{source['id']}/remove")
+    assert response.status_code == 302
+    assert "removed=Example+Venue" in response.headers["Location"]
+    with db.session(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM web_source").fetchone()[0] == 0

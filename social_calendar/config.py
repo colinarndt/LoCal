@@ -26,6 +26,14 @@ API_KEYS = [
      "https://console.apify.com/settings/integrations"),
 ]
 
+REFRESH_HOURS_MIN = 1
+REFRESH_HOURS_MAX = 720
+REFRESH_INTERVAL_KEYS = (
+    "instagram_refresh_hours",
+    "performer_refresh_hours",
+    "venue_refresh_hours",
+)
+
 # Charlotte, NC -- the author's city, and a working example rather than a
 # baked-in assumption. `cli init` overwrites all of it.
 DEFAULTS = {
@@ -34,6 +42,12 @@ DEFAULTS = {
     "lon": -80.8431,
     "radius_miles": 25.0,
     "timezone": "America/New_York",
+    # Automatic refresh cadence by source type. These stay separate so a cheap
+    # website check cannot move the clock for a paid Instagram poll, and one
+    # recently checked website cannot postpone another.
+    "instagram_refresh_hours": 24,
+    "performer_refresh_hours": 6,
+    "venue_refresh_hours": 24,
     # Mac app only. Off by default: it is a menu bar app, and a Dock tile for
     # something that mostly runs a nightly job is clutter. On means a Dock icon
     # and a Cmd-Tab entry -- see `app.apply_dock_policy`.
@@ -105,6 +119,14 @@ def load(path: Path | str = CONFIG_PATH) -> dict:
         pass
     if not is_valid_timezone(cfg["timezone"]):
         cfg["timezone"] = DEFAULTS["timezone"]
+    for key in REFRESH_INTERVAL_KEYS:
+        try:
+            hours = int(cfg[key])
+            if not REFRESH_HOURS_MIN <= hours <= REFRESH_HOURS_MAX:
+                raise ValueError
+            cfg[key] = hours
+        except (TypeError, ValueError):
+            cfg[key] = DEFAULTS[key]
     return cfg
 
 

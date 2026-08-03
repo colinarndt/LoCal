@@ -17,12 +17,14 @@ import json
 import os
 import re
 import threading
+from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from dotenv import load_dotenv
 from flask import (Flask, Response, abort, redirect, render_template, request,
                    send_from_directory, url_for)
+from markupsafe import Markup, escape
 
 from . import config, db, discovery, geo, notifications, paths, runner, spend, websites
 
@@ -137,6 +139,85 @@ def clock(starts_at: str | None) -> str:
 CATEGORIES = ["music", "theater", "comedy", "food", "market", "art", "opening", "other"]
 
 
+class _CaptionHTMLSanitizer(HTMLParser):
+    """Keep description formatting without trusting website-provided HTML."""
+
+    allowed = {
+        "a", "b", "blockquote", "br", "code", "div", "em", "h2", "h3", "h4",
+        "hr", "i", "li", "ol", "p", "pre", "s", "small", "span", "strong",
+        "sub", "sup", "table", "tbody", "td", "tfoot", "th", "thead", "tr",
+        "u", "ul",
+    }
+    void = {"br", "hr"}
+    suppressed = {"embed", "iframe", "math", "object", "script", "style", "svg", "template"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.suppressed_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if self.suppressed_depth:
+            if tag in self.suppressed:
+                self.suppressed_depth += 1
+            return
+        if tag in self.suppressed:
+            self.suppressed_depth = 1
+            return
+        if tag not in self.allowed:
+            return
+        if tag == "a":
+            href = next((value for name, value in attrs if name.lower() == "href"), "")
+            href = str(href or "").strip()
+            parsed = urlsplit(href)
+            if parsed.scheme.lower() in {"http", "https", "mailto"}:
+                self.parts.append(
+                    f'<a href="{escape(href)}" target="_blank" rel="noopener">')
+                return
+        self.parts.append(f"<{tag}>")
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag.lower() in self.allowed and tag.lower() not in self.void:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if self.suppressed_depth:
+            if tag in self.suppressed:
+                self.suppressed_depth -= 1
+            return
+        if tag in self.allowed and tag not in self.void:
+            self.parts.append(f"</{tag}>")
+
+    def handle_data(self, data):
+        if not self.suppressed_depth:
+            self.parts.append(str(escape(data)))
+
+
+@app.template_filter("caption_html")
+def caption_html(value: str | None) -> Markup:
+    """Render benign event-description HTML while stripping executable markup."""
+    parser = _CaptionHTMLSanitizer()
+    try:
+        parser.feed(str(value or ""))
+        parser.close()
+    except (ValueError, TypeError):
+        return Markup(escape(value or ""))
+    return Markup("".join(parser.parts))
+
+
+@app.template_filter("source_link_label")
+def source_link_label(value: str | None) -> str:
+    """Name the preview link for the destination it really opens."""
+    try:
+        host = (urlsplit(value or "").hostname or "").lower()
+    except ValueError:
+        host = ""
+    return "instagram post" if host == "instagram.com" or host.endswith(".instagram.com") else "event page"
+
+
 # --- month grid -----------------------------------------------------------
 
 def parse_month(value: str | None) -> dt.date | None:
@@ -168,24 +249,52 @@ def query_with(args, **over) -> str:
 app.jinja_env.globals["query_with"] = query_with
 
 
+def _source_visibility_clause() -> str:
+    """SQL condition for events that are allowed into the local calendar.
+
+    Performer pages retain their complete tour history so changing a watch's
+    radius can take effect without fetching again. An event sourced only from a
+    performer page is therefore visible only when that source marks it in
+    range. Events corroborated by Instagram or a venue calendar stay visible.
+    """
+    return """(NOT EXISTS (SELECT 1 FROM event_source pes JOIN web_item pwi
+        ON pwi.post_id=pes.source_item_id JOIN web_source pws ON pws.id=pwi.source_id
+        WHERE pes.event_id=e.id AND pws.source_type='performer') OR
+        EXISTS (SELECT 1 FROM event_source pes JOIN web_item pwi
+        ON pwi.post_id=pes.source_item_id JOIN web_source pws ON pws.id=pwi.source_id
+        WHERE pes.event_id=e.id AND pws.source_type='performer' AND pwi.in_range=1) OR
+        EXISTS (SELECT 1 FROM event_source ies WHERE ies.event_id=e.id
+        AND ies.source_kind='instagram') OR
+        EXISTS (SELECT 1 FROM event_source wes JOIN web_item wwi
+        ON wwi.post_id=wes.source_item_id JOIN web_source wws ON wws.id=wwi.source_id
+        WHERE wes.event_id=e.id AND wws.source_type!='performer'))"""
+
+
+def _date_window_clause(args) -> tuple[str | None, list]:
+    """Return the date condition shared by event results and filter options."""
+    # A month bounds the window on both sides, so the "upcoming" floor would
+    # only blank out the days of the current month that have already passed.
+    # Bounds cover the whole grid, spill days included, so those cells are real.
+    month = parse_month(args.get("month"))
+    if month:
+        weeks = month_weeks(month)
+        return "substr(e.starts_at,1,10) BETWEEN ? AND ?", [
+            weeks[0][0].isoformat(), weeks[-1][-1].isoformat()]
+    if args.get("when", "upcoming") == "upcoming":
+        return "substr(e.starts_at,1,10) >= ?", [
+            dt.datetime.now(config.tzinfo()).date().isoformat()]
+    return None, []
+
+
 def _filters(args) -> tuple[str, list]:
     """Build the WHERE clause shared by the HTML view and the ICS feed."""
-    where = ["e.is_canonical = 1", "e.is_hidden = 0", "e.starts_at IS NOT NULL"]
+    where = ["e.is_canonical = 1", "e.is_hidden = 0", "e.starts_at IS NOT NULL",
+             "NOT EXISTS (SELECT 1 FROM series hs WHERE hs.id=e.occurrence_of "
+             "AND hs.is_hidden=1)"]
     # Tour dates stay cached so a radius edit can take effect without another
     # fetch, but they enter the calendar only when at least one performer watch
     # qualifies them. Local sources and Instagram retain their normal behavior.
-    where.append(
-        "(NOT EXISTS (SELECT 1 FROM event_source pes JOIN web_item pwi "
-        "ON pwi.post_id=pes.source_item_id JOIN web_source pws ON pws.id=pwi.source_id "
-        "WHERE pes.event_id=e.id AND pws.source_type='performer') OR "
-        "EXISTS (SELECT 1 FROM event_source pes JOIN web_item pwi "
-        "ON pwi.post_id=pes.source_item_id JOIN web_source pws ON pws.id=pwi.source_id "
-        "WHERE pes.event_id=e.id AND pws.source_type='performer' AND pwi.in_range=1) OR "
-        "EXISTS (SELECT 1 FROM event_source ies WHERE ies.event_id=e.id "
-        "AND ies.source_kind='instagram') OR "
-        "EXISTS (SELECT 1 FROM event_source wes JOIN web_item wwi "
-        "ON wwi.post_id=wes.source_item_id JOIN web_source wws ON wws.id=wwi.source_id "
-        "WHERE wes.event_id=e.id AND wws.source_type!='performer'))")
+    where.append(_source_visibility_clause())
     params: list = []
 
     if args.getlist("category"):
@@ -224,17 +333,10 @@ def _filters(args) -> tuple[str, list]:
     if args.get("review") == "1":
         where.append("e.needs_review = 1")
 
-    # A month bounds the window on both sides, so the "upcoming" floor would
-    # only blank out the days of the current month that have already passed.
-    # Bounds cover the whole grid, spill days included, so those cells are real.
-    month = parse_month(args.get("month"))
-    if month:
-        weeks = month_weeks(month)
-        where.append("substr(e.starts_at,1,10) BETWEEN ? AND ?")
-        params += [weeks[0][0].isoformat(), weeks[-1][-1].isoformat()]
-    elif args.get("when", "upcoming") == "upcoming":
-        where.append("substr(e.starts_at,1,10) >= ?")
-        params.append(dt.datetime.now(config.tzinfo()).date().isoformat())
+    date_window, date_params = _date_window_clause(args)
+    if date_window:
+        where.append(date_window)
+        params += date_params
     return " AND ".join(where), params
 
 
@@ -245,6 +347,11 @@ SELECT e.id, e.title, e.starts_at, e.start_time_known, e.venue_name, e.venue_key
        e.ticket_url, e.ticket_status,
        e.occurrence_of, e.dedupe_group, p.permalink, p.polled_handle,
        p.attributed_handle,
+       (SELECT wsc.id FROM web_item swi
+        JOIN web_series_candidate wsc ON wsc.source_id=swi.source_id
+          AND wsc.series_key=swi.series_key
+        WHERE swi.event_id=e.id AND wsc.status='proposed' LIMIT 1)
+         AS series_candidate_id,
        COALESCE(NULLIF(p.local_images,'[]'),
          (SELECT ip.local_images FROM event_source ies
           JOIN source_post ip ON ip.post_id=ies.source_item_id
@@ -316,6 +423,9 @@ def index():
 
     with db.session(app.config["DB"]) as conn:
         rows = _rows(conn, args)
+        source_visible = _source_visibility_clause()
+        date_window, date_params = _date_window_clause(args)
+        option_date_where = f" AND {date_window}" if date_window else ""
 
         # Group by calendar day, with a human label per group
         grouped: dict[str, list] = {}
@@ -337,21 +447,41 @@ def index():
 
         hoods = conn.execute(
             "SELECT v.neighborhood, COUNT(*) n FROM event e JOIN venue v ON v.venue_key=e.venue_key "
-            "WHERE e.is_canonical=1 AND v.neighborhood IS NOT NULL "
-            "GROUP BY 1 ORDER BY v.neighborhood").fetchall()
+            f"WHERE e.is_canonical=1 AND {source_visible}{option_date_where} "
+            "AND v.neighborhood IS NOT NULL GROUP BY 1 ORDER BY v.neighborhood",
+            date_params).fetchall()
         # One row per venue_key -- the raw venue_name has many spellings per
         # venue ("PETRAS BAR", "Petra's", "Petras Bar") and listing them all
         # made the dropdown look broken even though the filter worked.
         venues = conn.execute(
             "SELECT e.venue_key, COALESCE(v.display_name, MIN(e.venue_name)) AS label, "
             "COUNT(*) AS n FROM event e LEFT JOIN venue v ON v.venue_key = e.venue_key "
-            "WHERE e.venue_key != '' AND e.is_canonical = 1 "
-            "GROUP BY e.venue_key ORDER BY label").fetchall()
+            f"WHERE e.venue_key != '' AND e.is_canonical = 1 AND {source_visible}"
+            f"{option_date_where} GROUP BY e.venue_key ORDER BY label",
+            date_params).fetchall()
         accounts = conn.execute(
             "SELECT handle FROM account WHERE is_polled = 1 ORDER BY handle").fetchall()
-        review_count = conn.execute(
-            "SELECT COUNT(*) FROM event WHERE needs_review = 1 AND is_canonical = 1 "
-            "AND is_hidden = 0").fetchone()[0]
+        series_candidates = conn.execute(
+            "SELECT c.id,c.title,ws.name AS source_name,"
+            "COUNT(DISTINCT substr(e.starts_at,1,10)) AS occurrence_count,"
+            "MIN(substr(e.starts_at,1,10)) AS first_date,"
+            "MAX(substr(e.starts_at,1,10)) AS last_date,"
+            "SUM(e.is_hidden) AS hidden_count "
+            "FROM web_series_candidate c JOIN web_source ws ON ws.id=c.source_id "
+            "JOIN web_item wi ON wi.source_id=c.source_id AND wi.series_key=c.series_key "
+            "JOIN event e ON e.id=wi.event_id WHERE c.status='proposed' "
+            "GROUP BY c.id,c.title,ws.name "
+            "HAVING COUNT(DISTINCT substr(e.starts_at,1,10)) >= 2 "
+            "ORDER BY c.updated_at DESC").fetchall()
+
+        # Keep the header count honest: the review link preserves the current
+        # date, source, category, location, and distance filters, so count the
+        # same rows that its destination will actually render.  The old global
+        # database count included past events even when the UI said upcoming.
+        review_args = args.copy()
+        review_args["review"] = "1"
+        review_rows = rows if args.get("review") == "1" else _rows(conn, review_args)
+        review_count = len(review_rows) + len(series_candidates)
 
         pending_count = len(discovery.pending(conn))
 
@@ -361,7 +491,8 @@ def index():
         zip_failed=bool((request.args.get("zip") or "").strip()
                         and request.args.get("radius")
                         and _zip_center(request.args["zip"].strip()) is None),
-        categories=CATEGORIES, review_count=review_count, args=args,
+        categories=CATEGORIES, review_count=review_count,
+        series_candidates=series_candidates, args=args,
         today=today.isoformat(),
         cfg=config.load(), configured=config.exists(),
         view=view, weeks=weeks, month=month,
@@ -378,10 +509,20 @@ def act(event_id: int, action: str):
     if not field:
         return ("unknown action", 400)
     with db.session(app.config["DB"]) as conn:
-        # Toggle, so the same button undoes it
-        cur = conn.execute(f"SELECT {field} FROM event WHERE id=?", (event_id,)).fetchone()
+        # Recurring hides are intentionally series-wide. Confirmation and flags
+        # remain occurrence-level editorial decisions.
+        cur = conn.execute(
+            f"SELECT {field},occurrence_of FROM event WHERE id=?", (event_id,)).fetchone()
         if cur is None:
             return ("no such event", 404)
+        if field == "is_hidden" and cur["occurrence_of"] is not None:
+            series = conn.execute(
+                "SELECT is_hidden FROM series WHERE id=?", (cur["occurrence_of"],)).fetchone()
+            if series is not None:
+                new = 0 if series["is_hidden"] else 1
+                conn.execute("UPDATE series SET is_hidden=? WHERE id=?",
+                             (new, cur["occurrence_of"]))
+                return redirect(request.referrer or url_for("index"))
         new = 0 if cur[0] else 1
         reason = "manually flagged" if (field == "needs_review" and new) else None
         if field == "needs_review":
@@ -395,6 +536,22 @@ def act(event_id: int, action: str):
     if action == "confirm":
         destination = f"{destination.split('#', 1)[0]}#event-{event_id}"
     return redirect(destination)
+
+
+@app.post("/series-candidate/<int:candidate_id>/<decision>")
+def review_series(candidate_id: int, decision: str):
+    choices = {
+        "confirm": ("confirm", False),
+        "confirm-hide": ("confirm", True),
+        "reject": ("reject", False),
+    }
+    if decision not in choices:
+        return ("unknown series decision", 400)
+    with db.session(app.config["DB"]) as conn:
+        choice, hide = choices[decision]
+        if websites.decide_series_candidate(conn, candidate_id, choice, hide) is None:
+            return ("no such series suggestion", 404)
+    return redirect(request.referrer or url_for("index"))
 
 
 # --- settings -------------------------------------------------------------
@@ -417,6 +574,22 @@ def settings():
                # Unchecked boxes are simply absent from the form, so presence is
                # the value. Only the Mac app reads it.
                "show_in_dock": form.get("show_in_dock") == "on"}
+
+        refresh_fields = (
+            ("instagram_refresh_hours", "Instagram"),
+            ("performer_refresh_hours", "Performer webpage"),
+            ("venue_refresh_hours", "Venue webpage"),
+        )
+        for key, label in refresh_fields:
+            try:
+                hours = int(form.get(key))
+                if not config.REFRESH_HOURS_MIN <= hours <= config.REFRESH_HOURS_MAX:
+                    raise ValueError
+                new[key] = hours
+            except (TypeError, ValueError):
+                error = (f"{label} refresh must be between "
+                         f"{config.REFRESH_HOURS_MIN} and {config.REFRESH_HOURS_MAX} hours.")
+                break
 
         try:
             new["radius_miles"] = max(1.0, min(500.0, float(form.get("radius_miles"))))
@@ -637,6 +810,7 @@ def discover():
                                performer_sources=performer_sources,
                                website_added=request.args.get("website_added"),
                                performer_added=request.args.get("performer_added"),
+                               removed=request.args.get("removed"),
                                approved=request.args.get("approved"),
                                err=request.args.get("err"), job=job,
                                fetch_limit=FETCH_LIMIT,
@@ -699,6 +873,17 @@ def disable_website(source_id: int):
     with db.session(app.config["DB"]) as conn:
         conn.execute("UPDATE web_source SET enabled=0 WHERE id=?", (source_id,))
     return redirect(url_for("discover"))
+
+
+@app.post("/discover/website/<int:source_id>/remove")
+def remove_website(source_id: int):
+    if JOB["state"] == "running":
+        return redirect(url_for("discover", err="busy"))
+    with db.session(app.config["DB"]) as conn:
+        result = websites.remove_source(conn, source_id)
+        if result is None:
+            return ("no such website source", 404)
+    return redirect(url_for("discover", removed=result["source"]))
 
 
 @app.post("/discover/<handle>/<decision>")
@@ -786,7 +971,7 @@ def calendar_ics():
         rows = _rows(conn, request.args)
 
     return Response(_ics_document(rows, "Social Calendar"), mimetype="text/calendar",
-                    headers={"Content-Disposition": "inline; filename=social-calendar.ics"})
+                    headers={"Content-Disposition": "inline; filename=local-calendar.ics"})
 
 
 @app.route("/event/<int:event_id>/calendar.ics")
@@ -844,7 +1029,7 @@ def events_csv():
 
     return Response(buf.getvalue().encode("utf-8-sig"), mimetype="text/csv",
                     headers={"Content-Disposition":
-                             "attachment; filename=social-calendar.csv"})
+                             "attachment; filename=local-calendar.csv"})
 
 
 def main() -> None:

@@ -1,9 +1,10 @@
 import datetime as dt
+import re
 import zoneinfo
 
 from werkzeug.datastructures import MultiDict
 
-from social_calendar import db, web
+from social_calendar import db, web, websites
 from social_calendar.web import _filters
 
 
@@ -23,6 +24,24 @@ def test_naive_event_time_is_already_local(monkeypatch):
         web.config, "tzinfo", lambda: dt.timezone(dt.timedelta(hours=-4)))
 
     assert web.clock("2026-08-01T20:00:00") == "8pm"
+
+
+def test_preview_caption_html_is_formatted_but_sanitized():
+    rendered = str(web.caption_html(
+        '<p onclick="steal()">A <strong>strange</strong> night.</p>'
+        '<script>alert(1)</script>'
+        '<a href="javascript:steal()">bad link</a>'
+        '<a href="https://venue.example/details" style="color:red">details</a>'))
+
+    assert rendered == (
+        '<p>A <strong>strange</strong> night.</p>'
+        '<a>bad link</a>'
+        '<a href="https://venue.example/details" target="_blank" rel="noopener">details</a>')
+
+
+def test_preview_link_label_matches_its_destination():
+    assert web.source_link_label("https://www.instagram.com/p/example/") == "instagram post"
+    assert web.source_link_label("https://venue.example/events/show") == "event page"
 
 
 def test_list_heading_uses_weekday_names_for_the_current_calendar_week():
@@ -93,6 +112,91 @@ def test_search_box_finds_an_event_by_attached_instagram_caption(tmp_path, monke
     assert b"activeRequest.abort()" in by_caption.data
 
 
+def test_venue_filter_omits_out_of_range_performer_stops(tmp_path, monkeypatch):
+    path = tmp_path / "calendar.db"
+    with db.session(path) as conn:
+        performer_id = websites.add_source(
+            conn, "https://artist.example/tour", "Artist", source_type="performer",
+            radius_miles=250)
+        performer = conn.execute(
+            "SELECT * FROM web_source WHERE id=?", (performer_id,)).fetchone()
+        websites._upsert_event(
+            conn, performer,
+            websites.StructuredEvent(
+                external_id="remote-stop", title="Remote show", starts_at="2099-08-01",
+                start_time_known=False, venue_name="Remote Hall",
+                permalink="https://artist.example/tour/remote"),
+            "2099-07-01T12:00:00+00:00", in_range=False)
+        conn.execute(
+            "INSERT INTO source_post (post_id,polled_handle,posted_at,fetched_at) "
+            "VALUES ('local:1','venue','2099-07-01','now')")
+        conn.execute(
+            "INSERT INTO event (post_id,title,starts_at,venue_name,venue_key,created_at) "
+            "VALUES ('local:1','Local show','2099-08-02','Local Hall','local hall','now')")
+
+    monkeypatch.setitem(web.app.config, "DB", str(path))
+    page = web.app.test_client().get("/?when=all")
+
+    assert b'<option value="remote hall"' not in page.data
+    assert b'<option value="local hall"' in page.data
+
+
+def test_venue_filter_counts_only_upcoming_events_by_default(tmp_path, monkeypatch):
+    path = tmp_path / "calendar.db"
+    with db.session(path) as conn:
+        conn.execute(
+            "INSERT INTO source_post (post_id,polled_handle,posted_at,fetched_at) VALUES "
+            "('past:1','venue','2000-07-01','now'),"
+            "('future:1','venue','2099-07-01','now')")
+        conn.execute(
+            "INSERT INTO event (post_id,title,starts_at,venue_name,venue_key,created_at) VALUES "
+            "('past:1','Past show','2000-08-01','Boileryard at Camp North End',"
+            "'boileryard camp north end','now'),"
+            "('future:1','Future show','2099-08-01','Boileryard at Camp North End',"
+            "'boileryard camp north end','now')")
+
+    monkeypatch.setitem(web.app.config, "DB", str(path))
+    page = web.app.test_client().get("/")
+
+    assert re.search(
+        br">\s*Boileryard at Camp North End \(1\)</option>", page.data)
+
+
+def test_review_link_counts_only_events_visible_under_current_date_filter(
+        tmp_path, monkeypatch):
+    path = tmp_path / "calendar.db"
+    with db.session(path) as conn:
+        conn.execute(
+            "INSERT INTO source_post (post_id,polled_handle,posted_at,fetched_at) VALUES "
+            "('past:review','venue','2000-07-01','now'),"
+            "('future:review','venue','2099-07-01','now')")
+        conn.execute(
+            "INSERT INTO event "
+            "(post_id,title,starts_at,needs_review,created_at) VALUES "
+            "('past:review','Past review','2000-08-01',1,'now'),"
+            "('future:review','Future review','2099-08-01',1,'now')")
+
+    monkeypatch.setitem(web.app.config, "DB", str(path))
+    client = web.app.test_client()
+
+    upcoming = client.get("/")
+    review_page = client.get("/?review=1")
+    all_dates = client.get("/?when=all")
+
+    assert b"1 to review" in upcoming.data
+    assert b"2 to review" not in upcoming.data
+    assert upcoming.data.index(b'id="event-total"') < upcoming.data.index(
+        b'id="review-total"') < upcoming.data.index(b">sources</a>")
+    assert b'name="review"' not in upcoming.data
+    assert b">Filter</button>" not in upcoming.data
+    assert b".filters select" in upcoming.data
+    assert b'.filters input[type="range"]' in upcoming.data
+    assert b'.filters input[type="text"]' in upcoming.data
+    assert b"Future review" in review_page.data
+    assert b"Past review" not in review_page.data
+    assert b"2 to review" in all_dates.data
+
+
 def test_confirm_returns_to_the_event_card(tmp_path, monkeypatch):
     path = tmp_path / "calendar.db"
     with db.session(path) as conn:
@@ -127,6 +231,77 @@ def test_confirm_returns_to_the_event_card(tmp_path, monkeypatch):
         headers={"X-Requested-With": "fetch"},
     )
     assert ajax_response.get_json() == {"confirmed": False}
+
+
+def test_inferred_series_is_reviewed_before_grouping_and_can_be_hidden(tmp_path, monkeypatch):
+    path = tmp_path / "calendar.db"
+    with db.session(path) as conn:
+        source_id = websites.add_source(
+            conn, "https://whitewater.org/calendar", "WWC River Jam")
+        source = conn.execute("SELECT * FROM web_source WHERE id=?", (source_id,)).fetchone()
+        for day in ("2099-08-02", "2099-08-03"):
+            month, date = day[5:7], day[8:10]
+            url = f"https://whitewater.org/event/hours-of-operation-{month}-{date}-2099/"
+            event = websites.StructuredEvent(
+                external_id=url, title="Hours of Operation", starts_at=day,
+                start_time_known=False, venue_name=None, permalink=url)
+            websites._upsert_event(conn, source, event, "2099-08-01T12:00:00+00:00")
+        websites.refresh_series_candidates(conn, source_id)
+
+    monkeypatch.setitem(web.app.config, "DB", str(path))
+    client = web.app.test_client()
+    regular_page = client.get("/")
+    review_page = client.get("/?review=1")
+
+    assert b"This looks like a recurring series" in regular_page.data
+    assert b"Possible recurring series: Hours of Operation" in review_page.data
+    assert b"treat as series" in review_page.data
+    with db.read_session(path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM event WHERE occurrence_of IS NOT NULL").fetchone()[0] == 0
+        candidate_id = conn.execute("SELECT id FROM web_series_candidate").fetchone()[0]
+
+    response = client.post(
+        f"/series-candidate/{candidate_id}/confirm-hide",
+        headers={"Referer": "http://localhost/?review=1"})
+    assert response.status_code == 302
+    with db.read_session(path) as conn:
+        candidate = conn.execute("SELECT * FROM web_series_candidate").fetchone()
+        assert candidate["status"] == "confirmed"
+        assert conn.execute(
+            "SELECT is_hidden FROM series WHERE id=?", (candidate["series_id"],)).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM event WHERE occurrence_of=?",
+            (candidate["series_id"],)).fetchone()[0] == 2
+    hidden_page = client.get("/")
+    assert b"Hours of Operation" not in hidden_page.data
+
+
+def test_hide_on_a_confirmed_recurring_event_hides_the_series(tmp_path, monkeypatch):
+    path = tmp_path / "calendar.db"
+    with db.session(path) as conn:
+        conn.execute(
+            "INSERT INTO source_post (post_id,polled_handle,posted_at,fetched_at) "
+            "VALUES ('p1','venue','2099-08-01','now'),('p2','venue','2099-08-01','now')")
+        series_id = conn.execute(
+            "INSERT INTO series (title,kind,rule,created_at) "
+            "VALUES ('Weekly Show','recurring','every monday','now')").lastrowid
+        conn.execute(
+            "INSERT INTO event (post_id,title,starts_at,occurrence_of,created_at) VALUES "
+            "('p1','Weekly Show','2099-08-03',?,'now'),"
+            "('p2','Weekly Show','2099-08-10',?,'now')", (series_id, series_id))
+
+    monkeypatch.setitem(web.app.config, "DB", str(path))
+    client = web.app.test_client()
+    page = client.get("/")
+    assert b"hide series" in page.data
+
+    response = client.post("/event/1/hide", headers={"Referer": "http://localhost/"})
+    assert response.status_code == 302
+    with db.read_session(path) as conn:
+        assert conn.execute("SELECT is_hidden FROM series WHERE id=?", (series_id,)).fetchone()[0] == 1
+        assert conn.execute("SELECT SUM(is_hidden) FROM event").fetchone()[0] == 0
+    assert b"Weekly Show" not in client.get("/").data
 
 
 def test_event_calendar_download_contains_only_the_selected_event(tmp_path, monkeypatch):
@@ -167,9 +342,9 @@ def test_csv_link_uses_a_browser_download_instead_of_replacing_the_app_view(tmp_
     page = client.get("/")
     csv = client.get("/events.csv")
 
-    assert b'download="social-calendar.csv"' in page.data
+    assert b'download="local-calendar.csv"' in page.data
     assert b'href="/events.csv?' in page.data
-    assert csv.headers["Content-Disposition"] == "attachment; filename=social-calendar.csv"
+    assert csv.headers["Content-Disposition"] == "attachment; filename=local-calendar.csv"
 
 
 def test_existing_schema_all_day_span_is_repaired_when_database_opens(tmp_path):

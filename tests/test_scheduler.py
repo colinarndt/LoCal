@@ -26,6 +26,15 @@ def _ago(hours: float) -> str:
     return (NOW - dt.timedelta(hours=hours)).isoformat()
 
 
+def _web_conn(rows: list[tuple]) -> sqlite3.Connection:
+    conn = _conn({})
+    conn.execute(
+        "CREATE TABLE web_source (id INTEGER PRIMARY KEY, enabled INTEGER, "
+        "source_type TEXT, last_checked_at TEXT)")
+    conn.executemany("INSERT INTO web_source VALUES (?,?,?,?)", rows)
+    return conn
+
+
 # --- the lid-closed case ----------------------------------------------------
 
 def test_a_missed_night_runs_on_wake_rather_than_waiting_for_the_next_window():
@@ -37,6 +46,15 @@ def test_a_missed_night_runs_on_wake_rather_than_waiting_for_the_next_window():
 def test_a_recent_poll_is_not_due():
     conn = _conn({"venue": _ago(3)})
     assert scheduler.due(conn, now=NOW) is False
+
+
+def test_a_recent_website_check_does_not_delay_an_overdue_instagram_poll():
+    conn = _conn({"venue": _ago(30)})
+    conn.execute(
+        "CREATE TABLE web_source (id INTEGER PRIMARY KEY, enabled INTEGER, "
+        "source_type TEXT, last_checked_at TEXT)")
+    conn.execute("INSERT INTO web_source VALUES (1,1,'venue',?)", (_ago(1),))
+    assert scheduler.due(conn, now=NOW) is True
 
 
 def test_due_exactly_on_the_interval():
@@ -77,6 +95,37 @@ def test_a_malformed_mark_does_not_crash_the_scheduler_thread():
 def test_a_naive_timestamp_is_read_as_utc():
     conn = _conn({"venue": (NOW - dt.timedelta(hours=30)).replace(tzinfo=None).isoformat()})
     assert scheduler.due(conn, now=NOW) is True
+
+
+# --- independent website clocks --------------------------------------------
+
+def test_a_new_venue_page_is_due_without_a_manual_first_fetch():
+    conn = _web_conn([(1, 1, "venue", None)])
+    assert scheduler.due_venue_source_ids(conn, now=NOW) == [1]
+
+
+def test_a_recent_venue_does_not_mask_an_overdue_or_new_venue():
+    conn = _web_conn([
+        (1, 1, "venue", _ago(2)),
+        (2, 1, "venue", _ago(30)),
+        (3, 1, "venue", None),
+    ])
+    assert scheduler.due_venue_source_ids(conn, now=NOW) == [2, 3]
+
+
+def test_website_intervals_are_independent_by_source_type():
+    conn = _web_conn([
+        (1, 1, "venue", _ago(10)),
+        (2, 1, "performer", _ago(10)),
+        (3, 0, "performer", _ago(50)),
+    ])
+    assert scheduler.due_venue_source_ids(conn, interval_hours=24, now=NOW) == []
+    assert scheduler.due_performer_source_ids(conn, interval_hours=6, now=NOW) == [2]
+
+
+def test_a_bad_website_timestamp_cannot_strand_the_source():
+    conn = _web_conn([(1, 1, "venue", "not a timestamp")])
+    assert scheduler.due_venue_source_ids(conn, now=NOW) == [1]
 
 
 # --- the menu's "last run" line ---------------------------------------------

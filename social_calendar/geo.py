@@ -18,7 +18,7 @@ import urllib.request
 from . import config
 
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
-UA = "social-calendar/0.1 (personal event aggregator)"
+UA = "local-calendar/0.3 (personal event aggregator)"
 
 # Venue names as extracted do not always match OSM. The normalizer strips
 # apostrophes ("Petra's" -> "Petras Bar"), and some "venues" are really a series
@@ -189,20 +189,26 @@ def label_for(venue_key: str, osm_address: str | None, fallback: str | None = No
 def geocode_all(conn, city: str | None = None, force: bool = False) -> dict:
     """Fill the `venue` table for every venue_key seen in events.
 
-    Idempotent: a venue with coordinates is skipped unless `force`.
+    Idempotent: a venue with coordinates and a neighborhood is skipped unless
+    `force`; older partial records are retried so they can join the filter.
     """
     if city is None:
         city = default_city()
     rows = conn.execute(
-        "SELECT venue_key, venue_name, COUNT(*) n FROM event "
-        "WHERE venue_key != '' AND venue_key IS NOT NULL "
-        "GROUP BY venue_key ORDER BY n DESC").fetchall()
+        "SELECT e.venue_key, e.venue_name, e.location_city, e.location_region, "
+        "EXISTS (SELECT 1 FROM event_source es JOIN web_item wi "
+        "ON wi.post_id=es.source_item_id JOIN web_source ws ON ws.id=wi.source_id "
+        "WHERE es.event_id=e.id AND ws.source_type='performer' AND wi.in_range=1) "
+        "AS performer_in_range, COUNT(*) n FROM event e "
+        "WHERE e.venue_key != '' AND e.venue_key IS NOT NULL "
+        "GROUP BY e.venue_key ORDER BY n DESC").fetchall()
 
     stats = {"seen": len(rows), "geocoded": 0, "skipped": 0, "failed": 0}
     for r in rows:
         existing = conn.execute(
-            "SELECT lat FROM venue WHERE venue_key=?", (r["venue_key"],)).fetchone()
-        if existing and existing["lat"] is not None and not force:
+            "SELECT lat,neighborhood FROM venue WHERE venue_key=?", (r["venue_key"],)).fetchone()
+        if (existing and existing["lat"] is not None
+                and existing["neighborhood"] is not None and not force):
             stats["skipped"] += 1
             continue
 
@@ -210,9 +216,21 @@ def geocode_all(conn, city: str | None = None, force: bool = False) -> dict:
         # rate limit, and holding the write lock across that many sleeps takes
         # the web UI down for the length of the whole geocoding pass.
         conn.commit()
+        location = ", ".join(part for part in (r["location_city"], r["location_region"])
+                             if part)
         query = QUERY_OVERRIDES.get(r["venue_key"])
-        hit = (geocode_venue(query, city="") if query
-               else geocode_venue(r["venue_name"], city))
+        if r["performer_in_range"] and location:
+            # A performer page can list dates outside the configured city but
+            # inside that watch's radius. Its own city/region is authoritative;
+            # the exact place lookup supplies the neighborhood for the filter.
+            hit = geocode_place(", ".join(part for part in (query or r["venue_name"], location)
+                                             if part))
+        else:
+            # Structured event pages commonly include the city where the show
+            # actually happens. Prefer it to the configured city, which makes
+            # a venue's neighborhood resilient to nearby-city namesakes.
+            hit = (geocode_venue(query, city="") if query
+                   else geocode_venue(r["venue_name"], location or city))
         if not hit:
             conn.execute(
                 "INSERT INTO venue (venue_key, display_name, geocoded_at) VALUES (?,?,datetime('now')) "
