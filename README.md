@@ -8,6 +8,11 @@
 
 LoCal shows upcoming events in your area from the artists and venues you care about
 
+Supports events from:
+- Venue events page
+- Artist tour page 
+- Instagram accounts
+
 ### [Download LoCal for Mac](https://github.com/colinarndt/LoCal/releases/latest)
 
 <sub>Apple Silicon · no account · your data stays on your Mac</sub>
@@ -34,22 +39,15 @@ LoCal shows upcoming events in your area from the artists and venues you care ab
 
 ## Your sources, one calendar
 
-**Instagram accounts**<br>
-Follow the venues, organizers, and local businesses that announce events in
-their posts. LoCal reads the caption and, when it finds an event, the flyer too.
-
 **Venue calendars**<br>
-Add an events page or an `.ics` calendar feed. LoCal imports iCalendar,
-schema.org event data, and several common event-list layouts directly. Other
-layouts can use a small text-only AI pass after LoCal removes images, scripts,
-and raw markup.
 
 **Performer tour pages**<br>
-Follow a musician, comedian, speaker, or other act. LoCal adds dates within the
-distance you choose and can alert you when it finds a new nearby show.
+LoCal adds upcoming dates close to you and can alert you when a new show is announced by you.
 
-When several sources describe the same event, LoCal keeps one calendar entry and
-retains the links back to each source.
+**Instagram accounts**<br>
+LoCal reads post captions and graphics to pull down event info.
+
+When several sources list the same event, LoCal only keeps one entry.
 
 ## Features
 
