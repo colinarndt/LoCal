@@ -16,14 +16,14 @@ Connect it to your favorite artists, venues and even instagram accounts. Never m
 
 <br>
 
-<img src="docs/list.png" alt="Upcoming local events with their flyer, time, venue, and neighborhood">
+<img src="docs/list-view.png" alt="Upcoming local events with their flyer, time, venue, and neighborhood">
 
 <details>
 <summary>Prefer a month grid?</summary>
 
 <br>
 
-<img src="docs/calendar.png" alt="A month grid with local event listings">
+<img src="docs/cal-view.png" alt="A month grid with local event listings">
 
 </details>
 
