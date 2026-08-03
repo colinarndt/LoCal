@@ -16,7 +16,7 @@ LoCal tracks your favorite events from artist pages, local venues and even insta
 
 <br>
 
-<img src="docs/list-view.png" alt="Upcoming local events with their flyer, time, venue, and neighborhood">
+<img src="docs/list-view.png" width="300" alt="Upcoming local events with their flyer, time, venue, and neighborhood">
 
 <details>
 <summary>Prefer a month grid?</summary>
