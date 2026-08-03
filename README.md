@@ -25,8 +25,9 @@ LoCal tracks your favorite events from artist pages, local venues and even insta
 
 <br>
 
-<img src="docs/cal-view.png" alt="A month grid with local event listings">
-
+<div align="center">
+<img src="docs/cal-view.png" width="600" alt="A month grid with local event listings">
+</div>
 </details>
 
 <br>
