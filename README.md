@@ -6,8 +6,7 @@
 
 **A calendar for the local events worth leaving the house for.**
 
-LoCal brings together the places, venues, and performers you follow, then gives
-you one clean calendar to browse, filter, and take with you.
+Connect it to your favorite artists, venues and even instagram accounts. Never miss an event again!
 
 ### [Download LoCal for Mac](https://github.com/colinarndt/instagram-calendar/releases/latest)
 
