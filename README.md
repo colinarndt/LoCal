@@ -4,9 +4,9 @@
 
 # LoCal
 
-**A calendar for the local events worth leaving the house for.**
+**Cure your FOMO**
 
-Connect it to your favorite artists, venues and even instagram accounts. Never miss an event again!
+LoCal tracks your favorite events from artist pages, local venues and even instagram accounts 
 
 ### [Download LoCal for Mac](https://github.com/colinarndt/instagram-calendar/releases/latest)
 
