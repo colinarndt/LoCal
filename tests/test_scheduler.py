@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from social_calendar import scheduler
+from local_calendar import scheduler
 
 NOW = dt.datetime(2026, 7, 29, 9, 0, tzinfo=dt.timezone.utc)
 

@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LoCal</title>
+<link rel="icon" href="{{ url_for('static', filename='icon.svg') }}" type="image/svg+xml">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename='icon.png') }}">
 <style>
   :root {
     --bg:#fbfaf8; --card:#fff; --ink:#1a1a1a; --muted:#6b6b6b; --line:#e5e2dd;
@@ -68,16 +70,54 @@
   .setup code { background:rgba(128,128,128,.15); border-radius:4px; padding:1px 5px; }
   .setup a { color:inherit; }
 
-  .viewbar { display:flex; align-items:center; gap:10px; margin:10px 0 0; }
-  .views { display:flex; gap:6px; margin:0; flex:none; }
-  .views a { font-size:.85rem; padding:5px 14px; border:1px solid var(--line);
-             border-radius:999px; text-decoration:none; color:var(--muted); }
-  .views a.on { background:var(--accent); border-color:transparent; color:#fff; }
-  .search { margin-left:auto; display:flex; justify-content:flex-end; gap:6px;
-            min-width:0; flex:1; }
+  .viewbar { display:flex; align-items:center; gap:10px; margin:10px 0 0; flex-wrap:wrap; }
+  .views { display:flex; gap:6px; margin-left:auto; flex:none; }
+  .views select { font:inherit; font-size:.85rem; padding:5px 10px; border-radius:7px;
+                  border:1px solid var(--line); background:var(--card); color:var(--ink); }
+  /* An active trip is a scope, not a filter -- say so loudly enough that nobody
+     wonders why their home venues vanished. */
+  .views select.on { border-color:transparent; background:var(--accent); color:#fff; }
+  /* Which of the two trip pickers is live. Same breakpoint as the header. */
+  .views .narrow-only { display:none; }
+  @media (max-width:559px) {
+    .views .wide-only { display:none; }
+    .views .narrow-only { display:inline-block; }
+  }
+  .search { display:flex; gap:6px; min-width:0; flex:1; }
   .search input { width:min(360px,100%); min-width:0; font:inherit; padding:6px 10px;
                   border-radius:7px; border:1px solid var(--line);
                   background:var(--card); color:var(--ink); }
+  .tripnote { margin:8px 0 0; font-size:.85rem; color:var(--muted); }
+
+  /* Hand-entered events. Collapsed so the planning tools never compete with the
+     listings, which are what the page is for. */
+  .addev { background:var(--card); border:1px solid var(--line); border-radius:10px;
+           padding:8px 12px; margin:0 0 10px; font-size:.9rem; }
+  .addev > summary { cursor:pointer; color:var(--accent); list-style:none; }
+  .addev > summary::-webkit-details-marker { display:none; }
+  .addev[open] > summary { margin-bottom:8px; }
+  .addev .row { margin-top:6px; }
+  .addev input, .addev select, .addev textarea {
+    font:inherit; font-size:.9rem; padding:6px 9px; border-radius:7px;
+    border:1px solid var(--line); background:var(--bg); color:var(--ink); min-width:0; }
+  .addev .grow { flex:1; min-width:130px; }
+  .addev textarea { width:100%; resize:vertical; }
+  .addev .hint { font-size:.78rem; color:var(--muted); }
+  /* Trip planning panels are opened by the compact action links beside "edit
+     trip". A closed panel should occupy no space or leave a second, summary-like
+     control behind lower on the page. */
+  .addev.triptool:not([open]) { display:none; }
+  /* On a card the edit form is a disclosure, not a panel: closed it should read
+     as one more small action beside confirm/hide/flag. */
+  .addev.inline { display:inline-block; margin:6px 0 0; padding:0; border:0;
+                  background:none; font-size:.85rem; }
+  .addev.inline > summary { padding:5px 12px; border:1px solid var(--line);
+                            border-radius:7px; color:var(--ink); display:inline-block; }
+  .addev.inline[open] { display:block; }
+  .addev.inline[open] > summary { margin-bottom:6px; }
+  .ev-note { margin-top:7px; font-size:.86rem; white-space:pre-wrap; }
+  .badge.mine { border-color:var(--accent); color:var(--accent); }
+  button.danger { color:#c0392b; }
   .search input:focus { outline:2px solid color-mix(in srgb, var(--accent) 45%, transparent);
                         border-color:var(--accent); }
   .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px;
@@ -219,19 +259,73 @@
   </div>
 {% endif %}
 
+{# The trip picker, rendered twice at different label lengths. `short` swaps the
+   full "Chicago work week · Sep 17-21" for the bare city, which is all that
+   fits beside the search box on a phone -- the dates are on the line below. #}
+{% macro trip_select(id, css, short) %}
+  <select id="{{ id }}" class="{{ css }}{% if trip %} on{% endif %}"
+          onchange="location.href=this.value">
+    {# A trip pins its own dates and area, so drop the filters that would fight
+       it: the month grid, the upcoming floor, and the home zip radius. #}
+    <option value="?{{ query_with(args, trip=None) }}"
+            {% if not trip %}selected{% endif %}>home</option>
+    {% for t in trips %}
+      <option value="?{{ query_with(args, trip=t['id'], month=None, when=None, zip=None, radius=None) }}"
+              {% if trip and trip['id'] == t['id'] %}selected{% endif %}
+              >{{ t['short_label'] if short else t['label'] }}</option>
+    {% endfor %}
+    {# The labels are bare because the dropdown reads as a scope; the only entry
+       that needs its own wording is the one that leaves the calendar. #}
+    <option value="/trips">{% if trips %}Manage trips…{% else %}Add a trip…{% endif %}</option>
+  </select>
+{% endmacro %}
+
 <div class="viewbar">
-  <nav class="views">
-    <a class="{% if view != 'calendar' %}on{% endif %}"
-       href="?{{ query_with(args, view=None, month=None) }}">list</a>
-    <a class="{% if view == 'calendar' %}on{% endif %}"
-       href="?{{ query_with(args, view='calendar', month=args.get('month') or today[:7]) }}">calendar</a>
-  </nav>
   <div class="search" role="search">
     <label class="sr-only" for="q">Search event titles and post captions</label>
     <input type="search" id="q" name="q" form="f" value="{{ args.get('q','') }}"
-           placeholder="Search events" autocomplete="off" aria-controls="results">
+           placeholder="Search" autocomplete="off" aria-controls="results">
   </div>
+  {# Both dropdowns navigate on change; their options carry whole URLs so the
+     rest of the query string survives the switch. #}
+  <nav class="views">
+    <label class="sr-only" for="viewpick">View</label>
+    <select id="viewpick" onchange="location.href=this.value">
+      <option value="?{{ query_with(args, view=None, month=None) }}"
+              {% if view != 'calendar' %}selected{% endif %}>list</option>
+      <option value="?{{ query_with(args, view='calendar', month=args.get('month') or today[:7]) }}"
+              {% if view == 'calendar' %}selected{% endif %}>calendar</option>
+    </select>
+    {# Two server-rendered pickers, one shown per width, rather than one whose
+       option text JavaScript rewrites. iOS Safari builds its native menu from
+       the original text and leaves a JS-edited row BLANK -- the option is
+       there, sized and tappable, with nothing drawn in it. Static text in both
+       copies is the only version that cannot hit that. #}
+    <label class="sr-only" for="trippick">Trips</label>
+    {{ trip_select('trippick', 'wide-only', false) }}
+    <label class="sr-only" for="trippick-short">Trips</label>
+    {{ trip_select('trippick-short', 'narrow-only', true) }}
+  </nav>
 </div>
+
+{% if trip %}
+  <p class="tripnote" align="right">
+    <!-- Showing <strong>{{ trip['city'] }}</strong>, {{ trip['starts_on'] }}
+    to {{ trip['ends_on'] }}, within {{ trip['radius_miles']|round|int }} miles —
+    performers you follow plus this trip's own sources. -->
+    <a href="#trip-add-event" class="triptool-link"
+       onclick="var d=document.getElementById('trip-add-event');d.open=!d.open;
+                if(d.open)d.querySelector('[name=title]').focus();return false;"
+       >add event</a> ·
+    <a href="#trip-notes" class="triptool-link noteslink"
+       onclick="var d=document.getElementById('trip-notes');d.open=!d.open;
+                if(d.open)d.querySelector('textarea').focus();return false;"
+       >trip notes</a> ·
+    <a href="/trips/{{ trip['id'] }}">edit trip</a>
+    <!-- ·
+     <a href="?{{ query_with(args, trip=None) }}">back to home calendar</a> -->
+  </p>
+{% endif %}
 
 <form class="filters" method="get" id="f">
   {% if view == 'calendar' %}
@@ -240,6 +334,9 @@
   {% endif %}
   {% if args.get('review') == '1' %}
     <input type="hidden" name="review" value="1">
+  {% endif %}
+  {% if trip %}
+    <input type="hidden" name="trip" value="{{ trip['id'] }}">
   {% endif %}
   <div class="row">
     {% for c in categories %}
@@ -272,6 +369,9 @@
       {% endfor %}
     </select>
   </div>
+  {# A trip already fixes both the dates and the area, so the controls that would
+     contradict it are not shown rather than shown and ignored. #}
+  {% if not trip %}
   <div class="row date-distance">
     <select name="when">
       <option value="upcoming" {% if args.get('when','upcoming')=='upcoming' %}selected{% endif %}>upcoming</option>
@@ -288,6 +388,7 @@
     </div>
     <span class="hint">leave the zip blank to ignore distance</span>
   </div>
+  {% endif %}
   {% if zip_failed %}
     <div class="row"><span class="warnmsg">That zip code could not be located — showing
       unfiltered results rather than an empty page.</span></div>
@@ -295,9 +396,70 @@
   <div class="row">
     <label class="chip"><input type="checkbox" name="confirmed" value="1"
       {% if args.get('confirmed')=='1' %}checked{% endif %}> confirmed only</label>
-    <a href="/{% if view == 'calendar' %}?view=calendar{% endif %}"><button type="button">Reset</button></a>
+    {# Reset clears the filters, not the scope: a trip is where you are, not a filter. #}
+    <a href="/?{% if view == 'calendar' %}view=calendar&amp;{% endif %}{% if trip %}trip={{ trip['id'] }}{% endif %}"
+       ><button type="button">Reset</button></a>
   </div>
 </form>
+
+{# One field set, used by the add form below and by the edit form on every
+   hand-entered card. `e` prefills it. #}
+{% macro manual_fields(e=None, default_date=None) %}
+  <div class="row">
+    <input class="grow" name="title" maxlength="200" required
+           placeholder="what is it?" value="{{ e['title'] if e else '' }}">
+    {# Under a trip the default is the trip's first day, not today. Today would
+       be outside the window the entry is being scoped to, and the save would be
+       refused for a date the user never chose. #}
+    <input type="date" name="date" required
+           {% if trip %}min="{{ trip['starts_on'] }}" max="{{ trip['ends_on'] }}"{% endif %}
+           value="{{ e['starts_at'][:10] if e else (default_date or today) }}">
+    <input type="time" name="time"
+           value="{{ e['starts_at'][11:16] if e and e['start_time_known'] else '' }}">
+  </div>
+  <div class="row">
+    <input class="grow" name="venue" maxlength="200" placeholder="where (optional)"
+           value="{{ e['venue_name'] or '' if e else '' }}">
+    <select name="category">
+      <option value="">no category</option>
+      {% for c in categories %}
+        <option value="{{ c }}" {% if e and e['category'] == c %}selected{% endif %}>{{ c }}</option>
+      {% endfor %}
+    </select>
+    <input name="price_text" maxlength="80" placeholder="price"
+           value="{{ e['price_text'] or '' if e else '' }}" size="8">
+    <input class="grow" name="ticket_url" placeholder="link (optional)"
+           value="{{ e['ticket_url'] or '' if e else '' }}">
+  </div>
+  <div class="row">
+    <textarea name="notes" rows="2" maxlength="4000"
+              placeholder="notes — book the 6:40 train, Sam has the tickets"
+              >{{ e['notes'] or '' if e else '' }}</textarea>
+  </div>
+{% endmacro %}
+
+{# Add-your-own. Collapsed by default -- it is a planning tool, not the main
+   job of this page -- but forced open when a submission came back with an
+   error, so nobody has to hunt for the form to see what went wrong. #}
+<details class="addev{% if trip %} triptool{% endif %}"
+         {% if trip %}id="trip-add-event"{% endif %}
+         {% if args.get('event_err') %}open{% endif %}>
+  <summary>+ add your own event{% if trip %} to {{ trip['name'] }}{% endif %}</summary>
+  {% if args.get('event_err') %}
+    <p class="warnmsg">{{ args.get('event_err') }}</p>
+  {% endif %}
+  <form method="post" action="/events/manual/add">
+    <input type="hidden" name="back" value="{{ query_with(args) }}">
+    {% if trip %}<input type="hidden" name="trip" value="{{ trip['id'] }}">{% endif %}
+    {{ manual_fields(None, trip['starts_on'] if trip else today) }}
+    <div class="row">
+      <button class="primary" type="submit">add event</button>
+      <span class="hint">only a title and a date are required{% if trip %} —
+        the date has to fall inside the trip{% endif %}</span>
+    </div>
+  </form>
+</details>
+
 
 <div id="results" aria-live="polite">
 {# both exports carry the current filters, so build them from the live query #}
@@ -306,6 +468,27 @@
   · <a href="/events.csv?{{ query_with(args) }}" target="_blank" rel="noopener"
        download="local-calendar.csv"
        title="Download this view as a CSV -- import it into Google Sheets, Excel or Numbers">download CSV</a></p>
+
+{% if trip %}
+  {# Closed until the "trip notes" action beside "edit trip" is clicked. The
+     closed panel is completely hidden so it leaves no duplicate control lower
+     on the page. #}
+  <details class="addev triptool" id="trip-notes">
+    <summary>notes for {{ trip['name'] }}</summary>
+    <form method="post" action="/trips/{{ trip['id'] }}/notes">
+      <input type="hidden" name="back" value="{{ query_with(args) }}">
+      <div class="row">
+        <textarea name="notes" rows="3" maxlength="4000"
+                  placeholder="places to try, confirmation numbers, anything without a date"
+                  >{{ trip['notes'] or '' }}</textarea>
+      </div>
+      <div class="row">
+        <button class="primary" type="submit">save notes</button>
+        <span class="hint">for the ideas that have no date yet</span>
+      </div>
+    </form>
+  </details>
+{% endif %}
 
 {% if args.get('review') == '1' and series_candidates %}
   {% for candidate in series_candidates %}
@@ -349,17 +532,21 @@
         {% if e['neighborhood'] %}<span class="badge hood">{{ e['neighborhood'] }}</span>{% endif %}
         {% if e['distance'] is defined %}
           <span class="badge">{{ '%.1f'|format(e['distance']) }} mi</span>{% endif %}
-        {% if e['performer_distance'] is not none %}
+        {# Measured from home, so it is meaningless while a trip is being shown --
+           the badge above already gives the distance that matters there. #}
+        {% if not trip and e['performer_distance'] is not none %}
           <span class="badge">{{ '%.1f'|format(e['performer_distance']) }} mi away</span>{% endif %}
         {% if e['ticket_status'] %}<span class="badge">{{ e['ticket_status'] }}</span>{% endif %}
         {% if e['category'] %}<span class="badge">{{ e['category'] }}</span>{% endif %}
         {% if e['occurrence_of'] %}<span class="badge">recurring</span>{% endif %}
+        {% if e['is_manual'] %}<span class="badge mine">yours</span>{% endif %}
         {% if e['source_count'] > 1 %}
           <span class="badge">{{ e['source_count'] }} sources</span>{% endif %}
       </div>
       {% if e['needs_review'] %}
         <div class="review-note">{{ e['review_reason'] or 'flagged' }}</div>
       {% endif %}
+      {% if e['notes'] %}<div class="ev-note">{{ e['notes'] }}</div>{% endif %}
       <div class="actions">
         {% if e['ticket_url'] %}
           <a href="{{ e['ticket_url'] }}" target="_blank" rel="noopener"><button type="button">buy tickets</button></a>
@@ -389,7 +576,23 @@
         {% endif %}
         <form method="post" action="/event/{{ e['id'] }}/flag">
           <button type="submit">{{ 'clear flag' if e['needs_review'] else 'flag' }}</button></form>
+        {% if e['is_manual'] %}
+          <form method="post" action="/events/manual/{{ e['id'] }}/delete" class="drop-mine">
+            <input type="hidden" name="back" value="{{ query_with(args) }}">
+            <button class="danger" type="submit">delete</button></form>
+        {% endif %}
       </div>
+      {% if e['is_manual'] %}
+        {# Yours to change: the edit form is the add form, prefilled. #}
+        <details class="addev inline">
+          <summary>edit</summary>
+          <form method="post" action="/events/manual/{{ e['id'] }}/edit">
+            <input type="hidden" name="back" value="{{ query_with(args) }}">
+            {{ manual_fields(e) }}
+            <div class="row"><button class="primary" type="submit">save</button></div>
+          </form>
+        </details>
+      {% endif %}
       </div>
       {% if e['thumb'] %}
         <img class="thumb" src="/media/{{ e['thumb'] }}" alt="flyer" loading="lazy"
@@ -562,6 +765,18 @@
 
   var results = document.getElementById('results');
   bindResults(results);
+
+  // The trip picker carries both labels and shows whichever the width allows:
+  // "Chicago work week · Sep 17-21" on a Mac, "Chicago" on a phone. Re-run after
+  // any swap of .views, which restores the server-rendered full text.
+  // Deleting your own event is the one destructive action on this page, and
+  // unlike hiding a listing it cannot be undone by a re-fetch.
+  document.addEventListener('submit', function (event) {
+    var form = event.target.closest('.drop-mine');
+    if (form && !confirm('Delete this event?\n\nYou typed it in, so nothing can bring it back.')) {
+      event.preventDefault();
+    }
+  });
 
   // Debounced live search. Fetch a normal server-rendered page, then swap only
   // the result region so the search field keeps focus and typing stays fluid.

@@ -2,7 +2,7 @@ import gzip
 import json
 import datetime as dt
 
-from social_calendar import db, pipeline, websites
+from local_calendar import db, pipeline, websites
 
 
 JSONLD = """<!doctype html><html><head>
@@ -970,7 +970,7 @@ def test_remove_website_preserves_an_event_backed_by_instagram():
 
 
 def test_source_page_can_add_disable_and_offer_removal_for_a_website(tmp_path):
-    from social_calendar import web
+    from local_calendar import web
 
     path = tmp_path / "calendar.db"
     web.app.config.update(TESTING=True, DB=str(path))

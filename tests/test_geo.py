@@ -1,4 +1,4 @@
-from social_calendar import db, geo, websites
+from local_calendar import db, geo, websites
 
 
 def test_geocode_all_uses_event_locations_for_website_and_performer_venues(monkeypatch):

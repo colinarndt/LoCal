@@ -54,6 +54,18 @@ title or caption, then switch between a list and month grid.
 Mark events as interested, hide the ones you have ruled out, or flag anything
 that needs a second look.
 
+**Take it with you.**<br>
+Add a trip — a city and the dates you are there — and switch the calendar to it.
+The performers you already follow show their dates near where you will be, and
+you can give the trip its own event pages and Instagram accounts without those
+sources ever reaching your home calendar.
+
+**Plan around what you find.**<br>
+Add your own events — a dinner, a flight, a friend's party — alongside the ones
+LoCal found, with a note for the details that matter. They sit in the same list,
+grid, and calendar feed. Each trip also keeps a free-form notes field for the
+ideas that have no date yet.
+
 **Handle recurring events once.**<br>
 LoCal flags likely recurring venue listings for review. Approve a series once,
 then manage its current and future dates together.
@@ -178,7 +190,7 @@ your own scheduler alongside the Mac app.
 
 LoCal keeps its data in `~/Library/Application Support/instagram-calendar` on
 macOS (`$XDG_DATA_HOME` on Linux and `%APPDATA%` on Windows). Set
-`SOCIAL_CALENDAR_HOME` to choose another location. LoCal keeps the original
+`LOCAL_CALENDAR_HOME` to choose another location. LoCal keeps the original
 folder name so an Instagram Calendar update opens your existing calendar and
 keys without a data migration.
 

@@ -11,9 +11,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from social_calendar import db, pipeline, spend
-from social_calendar.extract import Extractor
-from social_calendar.sources import RawPost
+from local_calendar import db, pipeline, spend
+from local_calendar.extract import Extractor
+from local_calendar.sources import RawPost
 
 
 class FakeOpenAI:

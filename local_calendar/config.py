@@ -41,6 +41,9 @@ DEFAULTS = {
     "lat": 35.2271,
     "lon": -80.8431,
     "radius_miles": 25.0,
+    # Nominatim's postcode lookup needs a country to disambiguate; `geocode_zip`
+    # reads it. Its absence here made the calendar's zip filter raise KeyError.
+    "country": "us",
     "timezone": "America/New_York",
     # Automatic refresh cadence by source type. These stay separate so a cheap
     # website check cannot move the clock for a paid Instagram poll, and one

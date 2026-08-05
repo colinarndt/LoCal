@@ -1,4 +1,4 @@
-from social_calendar import db, websites
+from local_calendar import db, websites
 
 
 PUNCHUP = """<!doctype html><html><body><main>

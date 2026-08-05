@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from social_calendar import config, web
+from local_calendar import config, web
 
 
 def test_settings_shows_and_saves_all_three_refresh_intervals(monkeypatch):

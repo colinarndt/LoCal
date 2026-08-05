@@ -1,6 +1,6 @@
 """The menu bar app: status item, embedded calendar, self-scheduling daily run.
 
-    python -m social_calendar.app
+    python -m local_calendar.app
 
 Written straight against AppKit rather than on rumps + pywebview. Both of those
 want to own the main thread's NSApplication run loop, and there is exactly one;
@@ -11,7 +11,7 @@ instead of four.
 
 Three things share this process:
 
-  * Flask, on a daemon thread, serving the same UI as `python -m social_calendar.web`
+  * Flask, on a daemon thread, serving the same UI as `python -m local_calendar.web`
   * a WKWebView pointed at it, so the calendar opens *in* the app -- no browser
   * a scheduler thread that runs the daily poll when one is overdue
 
@@ -41,7 +41,7 @@ from Foundation import NSMakeRect, NSTimer, NSURL, NSURLRequest
 from WebKit import (WKNavigationActionPolicyAllow, WKNavigationActionPolicyCancel,
                     WKWebView, WKWebViewConfiguration)
 
-from . import config, db, discovery, paths, scheduler, spend, web
+from . import config, db, discovery, paths, scheduler, spend, trips, web
 
 PREFERRED_PORT = 8730
 WINDOW_SIZE = (1180, 860)
@@ -499,8 +499,7 @@ class AppDelegate(NSObject):
         with db.session(web.app.config["DB"]) as conn:
             handles = discovery.approved_handles(conn) if include_accounts else []
             if website_ids is None:
-                website_ids = [r["id"] for r in conn.execute(
-                    "SELECT id FROM web_source WHERE enabled=1 ORDER BY id")]
+                website_ids = trips.pollable_source_ids(conn)
         if not handles and not website_ids:
             print("no followed sources; nothing to fetch", file=sys.stderr)
             return

@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from social_calendar import db
+from local_calendar import db
 
 
 def _hold_write_lock(db_path, seconds, ready):

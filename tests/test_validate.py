@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from social_calendar.validate import check_weekday, sanity_window, validate
+from local_calendar.validate import check_weekday, sanity_window, validate
 
 
 def test_matching_weekday_passes():

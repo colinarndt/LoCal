@@ -156,8 +156,14 @@ def decide(conn, handle: str, approve: bool) -> None:
 
 
 def approved_handles(conn) -> list[str]:
+    """The Instagram poll rotation. Trip accounts count only near their trip --
+    every poll is a paid scrape, and a city you visit in October is not worth
+    money in March."""
+    from . import trips
+
     return [r["handle"] for r in conn.execute(
-        "SELECT handle FROM account WHERE is_polled=1 ORDER BY handle")]
+        f"SELECT handle FROM account WHERE is_polled=1 AND {trips.scope_clause(conn)} "
+        "ORDER BY handle")]
 
 
 def pending(conn) -> list[dict]:

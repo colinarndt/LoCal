@@ -146,6 +146,24 @@ CREATE TABLE IF NOT EXISTS web_series_candidate (
 );
 CREATE INDEX IF NOT EXISTS ix_web_series_status ON web_series_candidate(status);
 
+-- An upcoming trip: a city area plus the dates you are there. Trips are a lens
+-- over events that already exist -- every performer tour date is fetched and
+-- geocoded regardless of range (see websites._qualify_performer), so a trip
+-- reveals cached dates without another fetch. `web_source.trip_id` and
+-- `account.trip_id` scope sources that belong to the trip and nowhere else.
+CREATE TABLE IF NOT EXISTS trip (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,
+    city         TEXT NOT NULL,          -- as typed; geocoded to lat/lon once
+    lat          REAL,
+    lon          REAL,
+    radius_miles REAL NOT NULL DEFAULT 30,
+    starts_on    TEXT NOT NULL,          -- ISO date, inclusive
+    ends_on      TEXT NOT NULL,          -- ISO date, inclusive
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_trip_dates ON trip(starts_on);
+
 CREATE TABLE IF NOT EXISTS location_cache (
     location_key TEXT PRIMARY KEY,
     lat          REAL,
@@ -262,6 +280,18 @@ MIGRATIONS = [
     "ALTER TABLE event ADD COLUMN location_lon REAL",
     "ALTER TABLE event ADD COLUMN ticket_url TEXT",
     "ALTER TABLE event ADD COLUMN ticket_status TEXT",
+    # NULL means "belongs to the home calendar" -- the overwhelming majority.
+    "ALTER TABLE web_source ADD COLUMN trip_id INTEGER REFERENCES trip(id)",
+    "ALTER TABLE account ADD COLUMN trip_id INTEGER REFERENCES trip(id)",
+    "ALTER TABLE trip ADD COLUMN notes TEXT",
+    # Hand-entered events. `is_manual` is not cosmetic: it is the flag that keeps
+    # dedupe from rewriting a row the user typed, and the only row in this
+    # database that cannot be re-derived from a source if it is lost.
+    "ALTER TABLE event ADD COLUMN is_manual INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE event ADD COLUMN notes TEXT",
+    # Manual events carry their trip directly; every other row infers scope from
+    # the source that produced it, and a manual event has no source.
+    "ALTER TABLE event ADD COLUMN trip_id INTEGER REFERENCES trip(id)",
     # Earlier website imports treated CMS all-day spans (00:00:00 through
     # 23:59:59) as literal midnight events. Repair stored schema.org payloads
     # once on open; the condition is idempotent after start_time_known is zero.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-calendar"
-version = "0.3.0"
+version = "0.4.0"
 description = "A local event calendar built from Instagram, venue, and performer sources."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,20 +30,20 @@ app = [
 
 [project.scripts]
 # Primary LoCal commands.
-local-calendar = "social_calendar.cli:main"
-local-calendar-web = "social_calendar.web:main"
+local-calendar = "local_calendar.cli:main"
+local-calendar-web = "local_calendar.web:main"
 # Kept for existing installs while they move to the LoCal names.
-social-calendar = "social_calendar.cli:main"
-social-calendar-web = "social_calendar.web:main"
+social-calendar = "local_calendar.cli:main"
+social-calendar-web = "local_calendar.web:main"
 
 [tool.setuptools.packages.find]
-include = ["social_calendar*"]
+include = ["local_calendar*"]
 
 # Jinja templates are loaded from `Path(__file__).parent / "templates"`, so they
 # must travel with the package -- an install without them serves 500s on every
 # page, and py2app needs them declared here to bundle them at all.
 [tool.setuptools.package-data]
-social_calendar = ["templates/*.html", "static/*.svg"]
+local_calendar = ["templates/*.html", "static/*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -9,7 +9,7 @@ API keys -- resolves through here rather than off `__file__`. Two reasons:
   * `data/media` is the biggest thing this app owns (200MB+ and growing). It
     belongs beside the database, not inside the application.
 
-`SOCIAL_CALENDAR_HOME` overrides the lot. Tests point it at a tmpdir; a dev who
+`LOCAL_CALENDAR_HOME` overrides the lot. Tests point it at a tmpdir; a dev who
 wants the old repo-tree layout back can export it and get exactly that.
 """
 
@@ -40,7 +40,7 @@ def _default_home() -> Path:
 
 def home() -> Path:
     """Resolved once per call so tests can move it between cases."""
-    override = os.getenv("SOCIAL_CALENDAR_HOME")
+    override = os.getenv("LOCAL_CALENDAR_HOME")
     return Path(override).expanduser() if override else _default_home()
 
 

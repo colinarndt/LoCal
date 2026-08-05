@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from social_calendar.runner import fetch_windows
+from local_calendar.runner import fetch_windows
 
 
 def _conn(marks: dict[str, str | None]) -> sqlite3.Connection:

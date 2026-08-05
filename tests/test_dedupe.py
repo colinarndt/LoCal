@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from social_calendar.dedupe import (
+from local_calendar.dedupe import (
     detect_recurrence, detect_run, expand_recurring, group_events,
     normalize_venue, title_similarity,
 )

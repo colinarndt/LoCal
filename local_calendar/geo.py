@@ -167,6 +167,26 @@ def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float
     return 2 * r * math.asin(math.sqrt(a))
 
 
+def bounding_box(lat: float, lon: float, miles: float) -> tuple[float, float, float, float]:
+    """(min_lat, max_lat, min_lon, max_lon) enclosing a radius.
+
+    A square around a circle, for use as a SQL prefilter only -- it over-selects
+    by up to 27% at the corners, so the caller still has to measure the ones it
+    returns. SQLite has no trig, and pulling every stored event into Python to
+    reject Portland when you asked about Austin is the alternative.
+    """
+    dlat = miles / 69.0
+    # Meridians converge; at 60 degrees a degree of longitude is half as wide.
+    scale = math.cos(math.radians(max(-89.0, min(89.0, lat))))
+    dlon = miles / (69.172 * scale) if scale > 1e-6 else 180.0
+    return (lat - dlat, lat + dlat, lon - dlon, lon + dlon)
+
+
+def city_key(city: str | None) -> str:
+    """'Austin, TX' -> 'austin'. Matches an event's `location_city` field."""
+    return (city or "").split(",")[0].strip().casefold()
+
+
 def label_for(venue_key: str, osm_address: str | None, fallback: str | None = None) -> str:
     """Human label for a venue.
 
@@ -199,7 +219,21 @@ def geocode_all(conn, city: str | None = None, force: bool = False) -> dict:
         "EXISTS (SELECT 1 FROM event_source es JOIN web_item wi "
         "ON wi.post_id=es.source_item_id JOIN web_source ws ON ws.id=wi.source_id "
         "WHERE es.event_id=e.id AND ws.source_type='performer' AND wi.in_range=1) "
-        "AS performer_in_range, COUNT(*) n FROM event e "
+        "AS performer_in_range, "
+        # A venue belonging to a trip is in another metro by definition, so the
+        # local-bounds guard below would reject its coordinates as a namesake.
+        "(SELECT t.city FROM trip t WHERE t.id = COALESCE("
+        # A hand-entered event carries its trip directly and has no source to
+        # walk, so it has to be checked before the two source paths.
+        " e.trip_id,"
+        " (SELECT ws2.trip_id FROM event_source es2 JOIN web_item wi2 "
+        "  ON wi2.post_id=es2.source_item_id JOIN web_source ws2 ON ws2.id=wi2.source_id "
+        "  WHERE es2.event_id=e.id AND ws2.trip_id IS NOT NULL LIMIT 1),"
+        " (SELECT a.trip_id FROM event_source es3 "
+        "  JOIN source_post sp ON sp.post_id=es3.source_item_id "
+        "  JOIN account a ON a.handle=sp.polled_handle "
+        "  WHERE es3.event_id=e.id AND a.trip_id IS NOT NULL LIMIT 1))) AS trip_city, "
+        "COUNT(*) n FROM event e "
         "WHERE e.venue_key != '' AND e.venue_key IS NOT NULL "
         "GROUP BY e.venue_key ORDER BY n DESC").fetchall()
 
@@ -219,7 +253,13 @@ def geocode_all(conn, city: str | None = None, force: bool = False) -> dict:
         location = ", ".join(part for part in (r["location_city"], r["location_region"])
                              if part)
         query = QUERY_OVERRIDES.get(r["venue_key"])
-        if r["performer_in_range"] and location:
+        if r["trip_city"]:
+            # Trip venues sit outside the home radius on purpose. Anchor them on
+            # the trip's own city and skip the metro guard entirely.
+            hit = geocode_place(", ".join(
+                part for part in (query or r["venue_name"], location or r["trip_city"])
+                if part))
+        elif r["performer_in_range"] and location:
             # A performer page can list dates outside the configured city but
             # inside that watch's radius. Its own city/region is authoritative;
             # the exact place lookup supplies the neighborhood for the filter.

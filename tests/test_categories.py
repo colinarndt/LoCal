@@ -1,4 +1,4 @@
-from social_calendar import prompts, web
+from local_calendar import prompts, web
 
 
 def test_theater_is_available_to_extraction_and_filters():

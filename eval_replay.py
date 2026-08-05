@@ -29,7 +29,7 @@ import sys
 
 from dotenv import load_dotenv
 
-from social_calendar import db, extract, paths, spend
+from local_calendar import db, extract, paths, spend
 
 # Same order the CLI uses: .env.local wins over .env, and both lose to anything
 # already exported in the shell.

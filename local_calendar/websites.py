@@ -76,7 +76,8 @@ def normalize_url(value: str) -> str:
 
 def add_source(conn: sqlite3.Connection, url: str, name: str | None = None,
                linked_handle: str | None = None, source_type: str = "venue",
-               radius_miles: float | None = None, notify: bool = False) -> int:
+               radius_miles: float | None = None, notify: bool = False,
+               trip_id: int | None = None) -> int:
     url = normalize_url(url)
     label = (name or "").strip() or urllib.parse.urlsplit(url).netloc.removeprefix("www.")
     handle = (linked_handle or "").strip().lstrip("@") or None
@@ -84,20 +85,25 @@ def add_source(conn: sqlite3.Connection, url: str, name: str | None = None,
         raise ValueError("unknown source type")
     if radius_miles is not None and not (1 <= float(radius_miles) <= 1000):
         raise ValueError("radius must be between 1 and 1000 miles")
+    if trip_id is not None and source_type == "performer":
+        # A performer watch is national by design and every trip inherits it.
+        # Scoping one to a trip would silently narrow the follow.
+        raise ValueError("performer watches are followed everywhere, not per trip")
     existing = conn.execute("SELECT id FROM web_source WHERE url=?", (url,)).fetchone()
     if existing:
         conn.execute(
             "UPDATE web_source SET name=?, linked_handle=?, source_type=?, radius_miles=?, "
-            "notify=?, enabled=1 WHERE id=?",
-            (label, handle, source_type, radius_miles, int(notify), existing["id"]))
+            "notify=?, trip_id=?, enabled=1 WHERE id=?",
+            (label, handle, source_type, radius_miles, int(notify), trip_id, existing["id"]))
         if source_type == "performer":
             recalculate_performer(conn, existing["id"])
         return existing["id"]
     return conn.execute(
         "INSERT INTO web_source "
-        "(name,url,linked_handle,source_type,radius_miles,notify,enabled,added_at) "
-        "VALUES (?,?,?,?,?,?,1,?)",
-        (label, url, handle, source_type, radius_miles, int(notify), _now())).lastrowid
+        "(name,url,linked_handle,source_type,radius_miles,notify,trip_id,enabled,added_at) "
+        "VALUES (?,?,?,?,?,?,?,1,?)",
+        (label, url, handle, source_type, radius_miles, int(notify), trip_id,
+         _now())).lastrowid
 
 
 class _StructuredHTML(HTMLParser):

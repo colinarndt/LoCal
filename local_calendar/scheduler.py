@@ -18,6 +18,8 @@ from __future__ import annotations
 import datetime as dt
 import sqlite3
 
+from . import trips
+
 DEFAULT_INTERVAL_HOURS = 24
 PERFORMER_INTERVAL_HOURS = 6
 VENUE_INTERVAL_HOURS = 24
@@ -109,9 +111,12 @@ def _due_website_source_ids(conn: sqlite3.Connection, source_type: str,
     are treated the same way so a bad mark cannot strand a source forever.
     """
     now = now or dt.datetime.now(dt.timezone.utc)
+    # A trip's own sources join the rotation only near the trip. Checking an
+    # Austin venue page every night in February costs money and answers nothing.
+    scope = trips.scope_clause(conn)
     rows = conn.execute(
         "SELECT id,last_checked_at FROM web_source WHERE enabled=1 "
-        "AND source_type=? ORDER BY id", (source_type,)).fetchall()
+        f"AND source_type=? AND {scope} ORDER BY id", (source_type,)).fetchall()
     due_ids = []
     for row in rows:
         if not row["last_checked_at"]:

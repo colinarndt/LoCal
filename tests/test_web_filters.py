@@ -4,8 +4,8 @@ import zoneinfo
 
 from werkzeug.datastructures import MultiDict
 
-from social_calendar import db, web, websites
-from social_calendar.web import _filters
+from local_calendar import db, web, websites
+from local_calendar.web import _filters
 
 
 def test_ui_dates_and_times_are_short_and_converted_to_configured_zone(monkeypatch):
@@ -106,7 +106,8 @@ def test_search_box_finds_an_event_by_attached_instagram_caption(tmp_path, monke
     assert b"The Glass Menagerie" in by_title.data
     assert b'name="q"' in by_caption.data
     assert b'value="Tennessee"' in by_caption.data
-    assert by_caption.data.index(b'class="views"') < by_caption.data.index(b'class="search"')
+    # Search leads the bar; the view and trip pickers sit right of it.
+    assert by_caption.data.index(b'class="search"') < by_caption.data.index(b'class="views"')
     assert b'>Search</button>' not in by_caption.data
     assert b"setTimeout(refreshResults, 250)" in by_caption.data
     assert b"activeRequest.abort()" in by_caption.data

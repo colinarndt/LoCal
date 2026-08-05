@@ -1,8 +1,8 @@
 """CLI. Cron schedules `run-once`; there is no daemon.
 
-    python -m social_calendar.cli run-once
-    python -m social_calendar.cli import-spike     # replay Phase 0, spends nothing
-    python -m social_calendar.cli stats
+    python -m local_calendar.cli run-once
+    python -m local_calendar.cli import-spike     # replay Phase 0, spends nothing
+    python -m local_calendar.cli stats
 """
 
 from __future__ import annotations
@@ -16,7 +16,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import avatars, db, discovery, extract, geo, migrate, paths, pipeline, runner, spend
+from . import (avatars, db, discovery, extract, geo, migrate, paths, pipeline, runner,
+               spend, trips)
 from .config import API_KEYS, ENV_PATH, write_env
 from .sources import ApifySource, LocalSpikeSource, read_accounts
 
@@ -131,8 +132,7 @@ def cmd_run_once(args) -> None:
     # a fresh clone must not silently start polling the author's Charlotte venues.
     with db.session(args.db) as conn:
         handles = discovery.approved_handles(conn)
-        website_ids = [r["id"] for r in conn.execute(
-            "SELECT id FROM web_source WHERE enabled=1 ORDER BY id")]
+        website_ids = trips.pollable_source_ids(conn)
         if not handles and not website_ids and not args.accounts:
             sys.exit(
                 "No Instagram accounts or websites are followed yet.\n"

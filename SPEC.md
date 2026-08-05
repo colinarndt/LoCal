@@ -432,10 +432,12 @@ Responsive web served from the same local box, reached over Tailscale or LAN. No
 | Phase | Contents | Gate |
 |---|---|---|
 | ~~**0**~~ | ~~Extraction spike~~ — **DONE 2026-07-26, rung 1 passed** (§3) | ✅ ~$1.10 spent |
-| ~~**1**~~ | ~~Provider adapter, schema, pipeline, dedup~~ — **BUILT 2026-07-27** in `social_calendar/`. Live `run-once` verified against Apify + Anthropic; 33 tests passing. | ⏳ still needs a week unattended |
-| ~~**2**~~ | ~~Web UI + filters, confirm/hide/flag, ICS~~ — **BUILT 2026-07-27** (`social_calendar/web.py`). Flask, server-rendered, responsive, dark-mode aware, binds 0.0.0.0 for phone access. | ⏳ use it to plan a weekend |
+| ~~**1**~~ | ~~Provider adapter, schema, pipeline, dedup~~ — **BUILT 2026-07-27** in `local_calendar/`. Live `run-once` verified against Apify + Anthropic; 33 tests passing. | ⏳ still needs a week unattended |
+| ~~**2**~~ | ~~Web UI + filters, confirm/hide/flag, ICS~~ — **BUILT 2026-07-27** (`local_calendar/web.py`). Flask, server-rendered, responsive, dark-mode aware, binds 0.0.0.0 for phone access. | ⏳ use it to plan a weekend |
 | ~~**3**~~ | ~~Discovery queue~~ — **BUILT 2026-07-27** (`discovery.py`, `/discover`, `cli discover`). Ranks tagged accounts by events produced, not raw frequency. **The poll rotation now lives in the `account` table**; `accounts.txt` is only a seed for an empty DB. | ⏳ add ≥5 accounts I'd have missed |
 | **4** | Stories ingestion (authenticated, sub-24h cadence) | — |
+| ~~**6**~~ | ~~Trips~~ — **BUILT 2026-08-05** (`trips.py`, `/trips`, `?trip=N`). A city, a date range, and a radius, applied as a lens over stored events. See §12. | ⏳ use it to plan a real trip |
+| ~~**7**~~ | ~~Hand-entered events + notes~~ — **BUILT 2026-08-05** (`manual.py`). Your own events in the same list and feed, fenced off from dedupe and series expansion. See §13. | ⏳ plan a real itinerary with it |
 | ~~**5**~~ | ~~Structured website sources~~ — **BUILT 2026-08-01**. Manual website list, iCalendar + schema.org ingestion, cross-source provenance, and conservative caption matching that skips vision for known events. Arbitrary unstructured/JS calendars remain future adapters. | ⏳ validate against real venue sites |
 
 ---
@@ -463,3 +465,93 @@ Responsive web served from the same local box, reached over Tailscale or LAN. No
 - Find the correct Visulite Theatre handle — `visulite` returned nothing.
 - ~~Recurring events — N separate events, or one recurring record?~~ **Resolved
   2026-07-26: N occurrences behind a `series`, generated 8 weeks out.** See §4.
+
+---
+
+## 12. Trips — DECIDED 2026-08-05
+
+A trip is a city area plus the dates you are there. It is a **lens over stored
+events, not a second pipeline.**
+
+That falls straight out of §5: `_qualify_performer` geocodes *every* tour stop
+and `web_item.in_range` only decides whether the home calendar shows it. The
+complete tour history is already local, already geocoded. So a trip needs no
+extra fetch and no extra model spend to answer "which of the acts I follow play
+where I am going" — it is a date window plus a distance test at query time.
+
+```
+trip(name, city, lat, lon, radius_miles, starts_on, ends_on)
+web_source.trip_id, account.trip_id   -- NULL means the home calendar
+```
+
+**Three rules carry the whole feature.**
+
+1. **Visibility is scoped both ways.** A trip's own sources never reach the home
+   calendar — without that, an Austin venue page enters through the ordinary
+   website branch of `_source_visibility_clause` and floods Charlotte. Under a
+   trip, the home-range test on performer dates is inverted: those out-of-range
+   dates are the entire point.
+2. **The trip radius is the trip's, not the performer's.** A 250-mile watch
+   tuned for "I would drive to Raleigh" would pull Houston into an Austin
+   weekend. Default 30 miles, per trip.
+3. **Trip sources are dormant outside their window.** They join the rotation 30
+   days before the trip and leave it after the last day. Every Instagram poll is
+   a paid scrape; a city visited in October is not worth money in March. An
+   explicit "check trip sources" click overrides this.
+
+**Two details that are easy to get wrong.**
+
+- `geocode_venue` rejects anything outside the home radius as a wrong-metro
+  namesake, which is correct for home and fatal for a trip. Trip venues go
+  through `geocode_place` against the trip's own city instead.
+- Failed geocodes are negative-cached, so a coordinate-only distance test loses
+  those stops permanently. A stop with no coordinates still matches on
+  `location_city`, which is what the source published.
+
+Instagram scope keys on `polled_handle`, never `attributed_handle` — §11
+measured 6 of 10 posts with divergent attribution, so attribution-based scoping
+would assign events by who reposted them.
+
+Performer watches are deliberately **not** scopeable to a trip: they are
+national by design and every trip inherits them. `add_source` refuses it.
+
+The UI is a scope, not a page: `/trips` is CRUD, and browsing a trip is the
+ordinary calendar with `?trip=N`. Filters, the month grid, CSV and the ICS feed
+all run through `_filters`, so a subscribable trip calendar costs nothing extra.
+
+---
+
+## 13. Hand-entered events — DECIDED 2026-08-05
+
+Itinerary planning: your own events beside the ones we found, so a trip reads as
+a plan rather than a listings page. A manual event gets the same compatibility
+`source_post` row website imports use, so it inherits the list, the grid, the
+filters, CSV and ICS without a single change to any of them.
+
+**The one property that makes this different from every other row in the
+database: it is not re-derivable.** Delete an extraction and it can be re-run;
+delete a scraped event and the next poll rebuilds it. A manual event exists
+nowhere else. `event.is_manual` is what protects it, and it is load-bearing in
+four places:
+
+| Guard | Without it |
+|---|---|
+| `rebuild_dedupe` skips manual rows | Your entry gets merged into a scraped listing that merely looks similar, and its provenance moves |
+| `_caption_match` will not target them | A scraped post attaches to your row, which then displays someone else's listing — and the real one is never extracted |
+| `expand_series` skips them | Notes are mirrored into the caption so search finds them, which puts *your words* in front of the recurrence detector: "they run this every Wednesday" would generate eight weeks of events |
+| `manual.delete` is guarded on the flag | The only user-reachable delete in the app could reach a scraped event |
+
+Manual events carry `trip_id` **directly** rather than inferring scope from a
+source, because they have no source. Created under a trip, they belong to it;
+created at home, they are home events.
+
+Only a title and a date are required. A date-only entry is a first-class result:
+"dinner somewhere Thursday" is worth writing down before the time is settled. A
+typed venue is geocoded if it resolves — through `geocode_place` against the
+trip's city, skipping the local-metro guard — and simply unlocated if not, since
+"Sam's place" must not be a save error.
+
+Notes exist at two levels. Per event, for the detail attached to a time ("book
+the 6:40 train"), which also rides into the ICS description. Per trip, for the
+ideas that have no date at all and therefore cannot live on a calendar organised
+by date.

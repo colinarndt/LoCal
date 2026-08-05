@@ -217,7 +217,11 @@ def _caption_match(conn: sqlite3.Connection, gate: dict) -> dict | None:
     venue = dedupe.normalize_venue(gate.get("venue_hint"))
     rows = conn.execute(
         "SELECT id,title,starts_at,venue_name,venue_key FROM event "
-        "WHERE is_canonical=1 AND substr(starts_at,1,10)=? AND title IS NOT NULL",
+        # A hand-entered event is never a match target. Attaching a scraped post
+        # to it would rewrite the user's row as the display record for someone
+        # else's listing, and the real listing would never be extracted at all.
+        "WHERE is_canonical=1 AND is_manual=0 AND substr(starts_at,1,10)=? "
+        "AND title IS NOT NULL",
         (day,)).fetchall()
     matches = []
     for row in rows:
@@ -254,10 +258,15 @@ def _iso_day(value: str | None) -> str | None:
 def rebuild_dedupe(conn: sqlite3.Connection) -> dict:
     """Recompute grouping over all events. Idempotent, safe to re-run after a
     normalizer change."""
+    # Hand-entered events are excluded outright. Dedupe may de-canonicalize a row
+    # and move its provenance onto another -- doing that to something the user
+    # typed would silently rewrite their own itinerary against a scraped listing
+    # that merely looks similar. A manual event stays canonical and alone.
     rows = conn.execute(
         "SELECT e.id, e.post_id, e.title, e.starts_at, e.venue_name, e.price_text, "
         "e.start_time_known, p.posted_at, p.source_name FROM event e "
-        "JOIN source_post p ON p.post_id = e.post_id").fetchall()
+        "JOIN source_post p ON p.post_id = e.post_id "
+        "WHERE e.is_manual = 0").fetchall()
     events = [dict(r) for r in rows]
     dedupe.group_events(events)
     for ev in events:
@@ -302,7 +311,11 @@ def expand_series(conn: sqlite3.Connection, weeks: int = 8) -> dict:
         "e.starts_at, e.start_time_known, e.post_id, p.posted_at, p.caption FROM event e "
         "JOIN source_post p ON p.post_id = e.post_id "
         "WHERE e.occurrence_of IS NULL AND e.starts_at IS NOT NULL "
-        "AND p.source_name != 'website'").fetchall()
+        # Manual events mirror their note into the caption so search finds it,
+        # which puts the user's own words in front of the recurrence detector.
+        # A note reading "they do this every Wednesday" would otherwise generate
+        # eight weeks of events nobody asked for.
+        "AND e.is_manual = 0 AND p.source_name != 'website'").fetchall()
 
     def _find_series(conn, title, venue_key, rule):
         """Match on venue + rule + fuzzy title -- two posts about the same
