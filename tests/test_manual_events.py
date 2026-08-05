@@ -273,8 +273,9 @@ def test_trip_notes_can_be_saved_from_the_calendar_without_leaving_it(tmp_path, 
     with db.session(path) as conn:
         assert trips.get(conn, trip_id)["notes"] == "Blue Line from the airport"
 
-    # Trip planning actions share one line, in the requested order. Their panels
-    # are present for the links to open but disappear completely while closed.
+    # Trip planning actions share one line, in the requested order. Add event is
+    # a hidden disclosure; notes open into a large modal instead of occupying the
+    # calendar page while closed.
     page = client.get(f"/?trip={trip_id}").data.decode()
     actions_start = page.index('<p class="tripnote"')
     actions = page[actions_start:page.index('</p>', actions_start)]
@@ -282,8 +283,11 @@ def test_trip_notes_can_be_saved_from_the_calendar_without_leaving_it(tmp_path, 
     assert actions.index('>trip notes') < actions.index('>edit trip</a>')
     assert '>trip notes</a>' in actions
     assert '<details class="addev triptool"\n         id="trip-add-event"' in page
-    assert '<details class="addev triptool" id="trip-notes">' in page
     assert '.addev.triptool:not([open]) { display:none; }' in page
+    assert 'onclick="document.getElementById(\'trip-notes\').showModal()' in actions
+    assert '<dialog class="notes-modal" id="trip-notes"' in page
+    assert '<textarea name="notes" rows="14"' in page
+    assert 'min-height:min(48vh,420px)' in page
     assert page.index("subscribe to this calendar") > page.index('id="trip-add-event"')
 
 

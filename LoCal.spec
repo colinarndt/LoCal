@@ -83,8 +83,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "LoCal",
         "CFBundleDisplayName": "LoCal",
-        "CFBundleShortVersionString": "0.4.0",
-        "CFBundleVersion": "0.4.0",
+        "CFBundleShortVersionString": "0.4.1",
+        "CFBundleVersion": "0.4.1",
         # Menu bar only: no Dock tile, no app menu bar takeover.
         "LSUIElement": True,
         "NSHighResolutionCapable": True,

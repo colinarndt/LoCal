@@ -115,6 +115,26 @@
                             border-radius:7px; color:var(--ink); display:inline-block; }
   .addev.inline[open] { display:block; }
   .addev.inline[open] > summary { margin-bottom:6px; }
+  /* Trip notes deserve reading room. The native dialog supplies Escape-to-close
+     and traps focus while open; the explicit controls make those exits visible. */
+  .notes-modal { width:min(680px,calc(100vw - 28px)); max-height:calc(100vh - 28px);
+                 padding:0; border:1px solid var(--line); border-radius:14px;
+                 background:var(--card); color:var(--ink);
+                 box-shadow:0 18px 60px rgba(0,0,0,.28); }
+  .notes-modal::backdrop { background:rgba(0,0,0,.58); backdrop-filter:blur(2px); }
+  .notes-modal-head { display:flex; align-items:center; justify-content:space-between;
+                      gap:12px; padding:14px 16px; border-bottom:1px solid var(--line); }
+  .notes-modal-head h2 { margin:0; font-size:1.05rem; }
+  .notes-modal-head .modal-x { border:0; background:none; padding:0 4px;
+                               color:var(--muted); font-size:1.6rem; line-height:1; }
+  .notes-modal form { padding:16px; }
+  .notes-modal textarea { display:block; width:100%; min-height:min(48vh,420px);
+                          max-height:62vh; resize:vertical; font:inherit; line-height:1.5;
+                          padding:10px 12px; border:1px solid var(--line);
+                          border-radius:8px; background:var(--bg); color:var(--ink); }
+  .notes-modal-actions { display:flex; align-items:center; justify-content:flex-end;
+                         flex-wrap:wrap; gap:8px; margin-top:12px; }
+  .notes-modal-actions .hint { margin-right:auto; font-size:.78rem; color:var(--muted); }
   .ev-note { margin-top:7px; font-size:.86rem; white-space:pre-wrap; }
   .badge.mine { border-color:var(--accent); color:var(--accent); }
   button.danger { color:#c0392b; }
@@ -318,8 +338,7 @@
                 if(d.open)d.querySelector('[name=title]').focus();return false;"
        >add event</a> ·
     <a href="#trip-notes" class="triptool-link noteslink"
-       onclick="var d=document.getElementById('trip-notes');d.open=!d.open;
-                if(d.open)d.querySelector('textarea').focus();return false;"
+       onclick="document.getElementById('trip-notes').showModal();return false;"
        >trip notes</a> ·
     <a href="/trips/{{ trip['id'] }}">edit trip</a>
     <!-- ·
@@ -470,24 +489,27 @@
        title="Download this view as a CSV -- import it into Google Sheets, Excel or Numbers">download CSV</a></p>
 
 {% if trip %}
-  {# Closed until the "trip notes" action beside "edit trip" is clicked. The
-     closed panel is completely hidden so it leaves no duplicate control lower
-     on the page. #}
-  <details class="addev triptool" id="trip-notes">
-    <summary>notes for {{ trip['name'] }}</summary>
+  {# A modal rather than a persistent disclosure: notes need enough room to read
+     as a document, but should take no space from the calendar while closed. #}
+  <dialog class="notes-modal" id="trip-notes" aria-labelledby="trip-notes-title"
+          onclick="if(event.target===this)this.close()">
+    <div class="notes-modal-head">
+      <h2 id="trip-notes-title">trip notes · {{ trip['name'] }}</h2>
+      <button class="modal-x" type="button" aria-label="close trip notes"
+              onclick="this.closest('dialog').close()">&times;</button>
+    </div>
     <form method="post" action="/trips/{{ trip['id'] }}/notes">
       <input type="hidden" name="back" value="{{ query_with(args) }}">
-      <div class="row">
-        <textarea name="notes" rows="3" maxlength="4000"
-                  placeholder="places to try, confirmation numbers, anything without a date"
-                  >{{ trip['notes'] or '' }}</textarea>
-      </div>
-      <div class="row">
-        <button class="primary" type="submit">save notes</button>
+      <textarea name="notes" rows="14" maxlength="4000" autofocus
+                placeholder="places to try, confirmation numbers, anything without a date"
+                >{{ trip['notes'] or '' }}</textarea>
+      <div class="notes-modal-actions">
         <span class="hint">for the ideas that have no date yet</span>
+        <button type="button" onclick="this.closest('dialog').close()">cancel</button>
+        <button class="primary" type="submit">save notes</button>
       </div>
     </form>
-  </details>
+  </dialog>
 {% endif %}
 
 {% if args.get('review') == '1' and series_candidates %}
