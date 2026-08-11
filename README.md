@@ -6,7 +6,7 @@
 
 **Cure your FOMO**
 
-LoCal shows upcoming events in your area from the artists and venues you follow
+LoCal tracks local events from your favorite venues and artists, so you never miss out on the fun!
 
 ### [Download LoCal for Mac](https://github.com/colinarndt/LoCal/releases/latest)
 
