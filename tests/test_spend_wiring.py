@@ -158,6 +158,22 @@ def test_ingest_survives_a_source_that_has_no_meter():
     assert spend.totals(conn)["all_time"] == 0
 
 
+def test_extraction_persists_an_explicit_end_time():
+    conn = db.connect(":memory:")
+    conn.execute(
+        "INSERT INTO source_post (post_id,polled_handle,posted_at,fetched_at) "
+        "VALUES ('p1','venue','2026-08-01','now')")
+
+    pipeline._insert_event(conn, {"post_id": "p1", "posted_at": "2026-08-01"}, None, {
+        "title": "Late Show", "starts_at": "2026-08-14T20:00:00",
+        "ends_at": "2026-08-14T22:30:00", "start_time_known": True,
+        "venue_name": "Example Room", "category": "music", "price_text": None,
+        "confidence": 1, "date_reasoning": "The flyer states 8pm to 10:30pm.",
+    }, {"events": 0, "flagged": 0})
+
+    assert conn.execute("SELECT ends_at FROM event").fetchone()[0] == "2026-08-14T22:30:00"
+
+
 def test_process_records_every_model_call():
     conn = db.connect(":memory:")
     source = FakeApifySource()

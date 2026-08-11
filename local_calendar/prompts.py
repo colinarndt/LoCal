@@ -8,7 +8,7 @@ Bump the relevant constant whenever that stage's prompt changes.
 """
 
 GATE_PROMPT_VERSION = "gate-v3"      # v3: explicit hints for pre-vision dedupe
-EXTRACT_PROMPT_VERSION = "extract-v3"   # v3: first-class theater category
+EXTRACT_PROMPT_VERSION = "extract-v4"   # v4: preserve stated end times
 
 def version_for(stage: str) -> str:
     return GATE_PROMPT_VERSION if stage == "gate" else EXTRACT_PROMPT_VERSION
@@ -127,8 +127,9 @@ arrived at starts_at — quote the text you read off the flyer and show the \
 resolution. This is read by a human when the extraction is wrong.
 
 Output ISO 8601 for starts_at (e.g. 2026-08-14T20:00:00 or 2026-08-14 when the \
-time is unknown). Use the local date as written on the flyer; do not \
-convert time zones.\
+time is unknown). If an end time is explicitly stated, put its ISO 8601 value \
+in ends_at; otherwise use null. Use the local date as written on the flyer; do \
+not convert time zones.\
 """
 
 EXTRACT_SCHEMA = {
@@ -146,6 +147,10 @@ EXTRACT_SCHEMA = {
         "start_time_known": {
             "type": "boolean",
             "description": "True only if an explicit start time appeared in the source.",
+        },
+        "ends_at": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "description": "ISO 8601 end time, only when explicitly stated.",
         },
         "venue_name": {"anyOf": [{"type": "string"}, {"type": "null"}]},
         "category": {
@@ -170,6 +175,7 @@ EXTRACT_SCHEMA = {
         "title",
         "starts_at",
         "start_time_known",
+        "ends_at",
         "venue_name",
         "category",
         "price_text",

@@ -83,13 +83,20 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "LoCal",
         "CFBundleDisplayName": "LoCal",
-        "CFBundleShortVersionString": "0.4.1",
-        "CFBundleVersion": "0.4.1",
+        "CFBundleShortVersionString": "0.4.2",
+        "CFBundleVersion": "0.4.2",
         # Menu bar only: no Dock tile, no app menu bar takeover.
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
         # Flask and the WKWebView talk plain HTTP over 127.0.0.1. Without this,
         # App Transport Security blocks the webview and the window renders blank.
         "NSAppTransportSecurity": {"NSAllowsLocalNetworking": True},
+        # EventKit refuses calendar access without an explicit, user-facing
+        # purpose string. The first key is used by current macOS; the second
+        # keeps the legacy permission request working on older releases.
+        "NSCalendarsFullAccessUsageDescription": (
+            "LoCal adds the events you choose to your default Calendar."),
+        "NSCalendarsUsageDescription": (
+            "LoCal adds the events you choose to your default Calendar."),
     },
 )

@@ -97,16 +97,13 @@
   .addev > summary::-webkit-details-marker { display:none; }
   .addev[open] > summary { margin-bottom:8px; }
   .addev .row { margin-top:6px; }
-  .addev input, .addev select, .addev textarea {
+  .addev input, .addev select, .addev textarea,
+  .event-modal input, .event-modal select, .event-modal textarea {
     font:inherit; font-size:.9rem; padding:6px 9px; border-radius:7px;
     border:1px solid var(--line); background:var(--bg); color:var(--ink); min-width:0; }
-  .addev .grow { flex:1; min-width:130px; }
-  .addev textarea { width:100%; resize:vertical; }
-  .addev .hint { font-size:.78rem; color:var(--muted); }
-  /* Trip planning panels are opened by the compact action links beside "edit
-     trip". A closed panel should occupy no space or leave a second, summary-like
-     control behind lower on the page. */
-  .addev.triptool:not([open]) { display:none; }
+  .addev .grow, .event-modal .grow { flex:1; min-width:130px; }
+  .addev textarea, .event-modal textarea { width:100%; resize:vertical; }
+  .addev .hint, .event-modal .hint { font-size:.78rem; color:var(--muted); }
   /* On a card the edit form is a disclosure, not a panel: closed it should read
      as one more small action beside confirm/hide/flag. */
   .addev.inline { display:inline-block; margin:6px 0 0; padding:0; border:0;
@@ -115,26 +112,29 @@
                             border-radius:7px; color:var(--ink); display:inline-block; }
   .addev.inline[open] { display:block; }
   .addev.inline[open] > summary { margin-bottom:6px; }
-  /* Trip notes deserve reading room. The native dialog supplies Escape-to-close
-     and traps focus while open; the explicit controls make those exits visible. */
-  .notes-modal { width:min(680px,calc(100vw - 28px)); max-height:calc(100vh - 28px);
-                 padding:0; border:1px solid var(--line); border-radius:14px;
-                 background:var(--card); color:var(--ink);
-                 box-shadow:0 18px 60px rgba(0,0,0,.28); }
-  .notes-modal::backdrop { background:rgba(0,0,0,.58); backdrop-filter:blur(2px); }
-  .notes-modal-head { display:flex; align-items:center; justify-content:space-between;
-                      gap:12px; padding:14px 16px; border-bottom:1px solid var(--line); }
-  .notes-modal-head h2 { margin:0; font-size:1.05rem; }
-  .notes-modal-head .modal-x { border:0; background:none; padding:0 4px;
-                               color:var(--muted); font-size:1.6rem; line-height:1; }
-  .notes-modal form { padding:16px; }
+  /* Trip planning tools use native dialogs: Escape closes them, focus stays
+     inside while open, and neither one occupies calendar space while closed. */
+  .tool-modal { width:min(760px,calc(100vw - 28px)); max-height:calc(100vh - 28px);
+                overflow:auto; padding:0; border:1px solid var(--line); border-radius:14px;
+                background:var(--card); color:var(--ink);
+                box-shadow:0 18px 60px rgba(0,0,0,.28); }
+  .tool-modal::backdrop { background:rgba(0,0,0,.58); backdrop-filter:blur(2px); }
+  .tool-modal-head { display:flex; align-items:center; justify-content:space-between;
+                     gap:12px; padding:14px 16px; border-bottom:1px solid var(--line); }
+  .tool-modal-head h2 { margin:0; font-size:1.05rem; }
+  .tool-modal-head .modal-x { border:0; background:none; padding:0 4px;
+                              color:var(--muted); font-size:1.6rem; line-height:1; }
+  .tool-modal form { padding:16px; }
+  .event-modal .row + .row { margin-top:10px; }
+  .event-modal > .warnmsg { display:block; margin:12px 16px 0; }
+  .notes-modal { width:min(680px,calc(100vw - 28px)); }
   .notes-modal textarea { display:block; width:100%; min-height:min(48vh,420px);
                           max-height:62vh; resize:vertical; font:inherit; line-height:1.5;
                           padding:10px 12px; border:1px solid var(--line);
                           border-radius:8px; background:var(--bg); color:var(--ink); }
-  .notes-modal-actions { display:flex; align-items:center; justify-content:flex-end;
-                         flex-wrap:wrap; gap:8px; margin-top:12px; }
-  .notes-modal-actions .hint { margin-right:auto; font-size:.78rem; color:var(--muted); }
+  .tool-modal-actions { display:flex; align-items:center; justify-content:flex-end;
+                        flex-wrap:wrap; gap:8px; margin-top:12px; }
+  .tool-modal-actions .hint { margin-right:auto; font-size:.78rem; color:var(--muted); }
   .ev-note { margin-top:7px; font-size:.86rem; white-space:pre-wrap; }
   .badge.mine { border-color:var(--accent); color:var(--accent); }
   button.danger { color:#c0392b; }
@@ -334,8 +334,8 @@
     to {{ trip['ends_on'] }}, within {{ trip['radius_miles']|round|int }} miles —
     performers you follow plus this trip's own sources. -->
     <a href="#trip-add-event" class="triptool-link"
-       onclick="var d=document.getElementById('trip-add-event');d.open=!d.open;
-                if(d.open)d.querySelector('[name=title]').focus();return false;"
+       onclick="document.getElementById('trip-add-event').showModal();
+                document.querySelector('#trip-add-event [name=title]').focus();return false;"
        >add event</a> ·
     <a href="#trip-notes" class="triptool-link noteslink"
        onclick="document.getElementById('trip-notes').showModal();return false;"
@@ -457,13 +457,21 @@
   </div>
 {% endmacro %}
 
-{# Add-your-own. Collapsed by default -- it is a planning tool, not the main
-   job of this page -- but forced open when a submission came back with an
-   error, so nobody has to hunt for the form to see what went wrong. #}
-<details class="addev{% if trip %} triptool{% endif %}"
-         {% if trip %}id="trip-add-event"{% endif %}
-         {% if args.get('event_err') %}open{% endif %}>
-  <summary>+ add your own event{% if trip %} to {{ trip['name'] }}{% endif %}</summary>
+{# At home this remains a small disclosure. On a trip it mirrors trip notes in
+   a modal, so neither planning form interrupts the calendar until requested. #}
+{% if trip %}
+<dialog class="tool-modal event-modal" id="trip-add-event"
+        aria-labelledby="trip-add-event-title"
+        onclick="if(event.target===this)this.close()">
+  <div class="tool-modal-head">
+    <h2 id="trip-add-event-title">add event · {{ trip['name'] }}</h2>
+    <button class="modal-x" type="button" aria-label="close add event"
+            onclick="this.closest('dialog').close()">&times;</button>
+  </div>
+{% else %}
+<details class="addev" {% if args.get('event_err') %}open{% endif %}>
+  <summary>+ add your own event</summary>
+{% endif %}
   {% if args.get('event_err') %}
     <p class="warnmsg">{{ args.get('event_err') }}</p>
   {% endif %}
@@ -471,13 +479,26 @@
     <input type="hidden" name="back" value="{{ query_with(args) }}">
     {% if trip %}<input type="hidden" name="trip" value="{{ trip['id'] }}">{% endif %}
     {{ manual_fields(None, trip['starts_on'] if trip else today) }}
-    <div class="row">
-      <button class="primary" type="submit">add event</button>
+    <div class="{% if trip %}tool-modal-actions{% else %}row{% endif %}">
       <span class="hint">only a title and a date are required{% if trip %} —
         the date has to fall inside the trip{% endif %}</span>
+      {% if trip %}
+        <button type="button" onclick="this.closest('dialog').close()">cancel</button>
+      {% endif %}
+      <button class="primary" type="submit">add event</button>
     </div>
   </form>
+{% if trip %}
+</dialog>
+  {% if args.get('event_err') %}
+  <script>
+    document.getElementById('trip-add-event').showModal();
+    document.querySelector('#trip-add-event [name=title]').focus();
+  </script>
+  {% endif %}
+{% else %}
 </details>
+{% endif %}
 
 
 <div id="results" aria-live="polite">
@@ -491,9 +512,9 @@
 {% if trip %}
   {# A modal rather than a persistent disclosure: notes need enough room to read
      as a document, but should take no space from the calendar while closed. #}
-  <dialog class="notes-modal" id="trip-notes" aria-labelledby="trip-notes-title"
+  <dialog class="tool-modal notes-modal" id="trip-notes" aria-labelledby="trip-notes-title"
           onclick="if(event.target===this)this.close()">
-    <div class="notes-modal-head">
+    <div class="tool-modal-head">
       <h2 id="trip-notes-title">trip notes · {{ trip['name'] }}</h2>
       <button class="modal-x" type="button" aria-label="close trip notes"
               onclick="this.closest('dialog').close()">&times;</button>
@@ -503,7 +524,7 @@
       <textarea name="notes" rows="14" maxlength="4000" autofocus
                 placeholder="places to try, confirmation numbers, anything without a date"
                 >{{ trip['notes'] or '' }}</textarea>
-      <div class="notes-modal-actions">
+      <div class="tool-modal-actions">
         <span class="hint">for the ideas that have no date yet</span>
         <button type="button" onclick="this.closest('dialog').close()">cancel</button>
         <button class="primary" type="submit">save notes</button>

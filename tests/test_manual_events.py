@@ -245,6 +245,9 @@ def test_the_add_form_reports_what_was_wrong_and_stays_on_the_same_view(
     assert "trip=1" in response.headers["Location"]
     assert "category=music" in response.headers["Location"]
     assert "event_err" in response.headers["Location"]
+    page = web.app.test_client().get(response.headers["Location"]).data.decode()
+    assert "document.getElementById('trip-add-event').showModal();" in page
+    assert "give the event a title" in page
 
 
 def test_a_manual_event_carries_its_note_into_the_calendar_feed(tmp_path, monkeypatch):
@@ -273,19 +276,18 @@ def test_trip_notes_can_be_saved_from_the_calendar_without_leaving_it(tmp_path, 
     with db.session(path) as conn:
         assert trips.get(conn, trip_id)["notes"] == "Blue Line from the airport"
 
-    # Trip planning actions share one line, in the requested order. Add event is
-    # a hidden disclosure; notes open into a large modal instead of occupying the
-    # calendar page while closed.
+    # Trip planning actions share one line, in the requested order. Both editors
+    # are dialogs, so neither occupies the calendar page while closed.
     page = client.get(f"/?trip={trip_id}").data.decode()
     actions_start = page.index('<p class="tripnote"')
     actions = page[actions_start:page.index('</p>', actions_start)]
     assert actions.index('>add event</a>') < actions.index('>trip notes')
     assert actions.index('>trip notes') < actions.index('>edit trip</a>')
     assert '>trip notes</a>' in actions
-    assert '<details class="addev triptool"\n         id="trip-add-event"' in page
-    assert '.addev.triptool:not([open]) { display:none; }' in page
+    assert 'onclick="document.getElementById(\'trip-add-event\').showModal()' in actions
+    assert '<dialog class="tool-modal event-modal" id="trip-add-event"' in page
     assert 'onclick="document.getElementById(\'trip-notes\').showModal()' in actions
-    assert '<dialog class="notes-modal" id="trip-notes"' in page
+    assert '<dialog class="tool-modal notes-modal" id="trip-notes"' in page
     assert '<textarea name="notes" rows="14"' in page
     assert 'min-height:min(48vh,420px)' in page
     assert page.index("subscribe to this calendar") > page.index('id="trip-add-event"')

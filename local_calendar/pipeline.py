@@ -171,11 +171,11 @@ def _insert_event(conn: sqlite3.Connection, post: dict, extraction_id: int,
         "date_reasoning": out.get("date_reasoning"),
     })
     event_id = conn.execute(
-        "INSERT INTO event (post_id, extraction_id, title, starts_at, start_time_known, "
+        "INSERT INTO event (post_id, extraction_id, title, starts_at, ends_at, start_time_known, "
         "venue_name, venue_key, category, price_text, confidence, date_reasoning, "
-        "needs_review, review_reason, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "needs_review, review_reason, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (post["post_id"], extraction_id, out.get("title"), out.get("starts_at"),
-         int(bool(out.get("start_time_known"))), out.get("venue_name"),
+         out.get("ends_at"), int(bool(out.get("start_time_known"))), out.get("venue_name"),
          dedupe.normalize_venue(out.get("venue_name")), out.get("category"),
          out.get("price_text"), out.get("confidence"), out.get("date_reasoning"),
          int(flagged), reason, _now())).lastrowid

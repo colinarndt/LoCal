@@ -431,7 +431,7 @@ def _filters(args, trip=None) -> tuple[str, list]:
 
 
 _SELECT_COLUMNS = """
-SELECT e.id, e.title, e.starts_at, e.start_time_known, e.venue_name, e.venue_key,
+SELECT e.id, e.title, e.starts_at, e.ends_at, e.start_time_known, e.venue_name, e.venue_key,
        e.category, e.price_text, e.needs_review, e.review_reason, e.is_confirmed,
        e.location_city, e.location_region, e.location_lat, e.location_lon,
        e.ticket_url, e.ticket_status, e.notes, e.is_manual,
@@ -1303,6 +1303,52 @@ def _fold(line: str) -> str:
     return "\r\n".join(out)
 
 
+def _calendar_event_fields(r) -> dict:
+    """Return the one event representation shared by ICS and the Mac app.
+
+    Parsed source times with offsets are converted to the configured calendar
+    zone; naive values already represent local wall time. An unknown end time
+    gets the one-hour default used by Apple's calendar apps.
+    """
+    start = _local_datetime(r["starts_at"])
+    if start is None:
+        raise ValueError("event has no usable start time")
+
+    timed = bool(r["start_time_known"]) and "T" in str(r["starts_at"])
+    if timed:
+        end = _local_datetime(r["ends_at"])
+        if end is None or end <= start:
+            end = start + dt.timedelta(hours=1)
+    else:
+        day = start.date()
+        start = dt.datetime.combine(day, dt.time())
+        end = start + dt.timedelta(days=1)
+
+    desc = " | ".join(x for x in [
+        # Your own note leads: on a phone the description is often all you
+        # see, and "book the 6:40 train" outranks the price of the ticket.
+        r["notes"] if "notes" in r.keys() else None,
+        r["price_text"],
+        "tickets: " + r["ticket_url"] if r["ticket_url"] else None,
+        f"source: @{r['attributed_handle']}" if r["attributed_handle"] else None,
+        r["permalink"],
+        "NEEDS REVIEW: " + (r["review_reason"] or "") if r["needs_review"] else None,
+    ] if x)
+    title = r["title"] or "(untitled)"
+    if r["needs_review"]:
+        title = "⚠ " + title
+    return {"title": title, "start": start, "end": end, "all_day": not timed,
+            "location": r["venue_name"] or "", "notes": desc,
+            "url": r["permalink"] or ""}
+
+
+def calendar_event_fields(event_id: int) -> dict | None:
+    """Return an event for a native calendar client, or ``None`` if it is gone."""
+    with db.read_session(app.config["DB"]) as conn:
+        row = conn.execute(f"{BASE_SELECT} WHERE e.id=?", (event_id,)).fetchone()
+    return _calendar_event_fields(row) if row is not None else None
+
+
 def _ics_document(rows, calendar_name: str) -> str:
     """Build one valid calendar file for either the whole view or one event."""
     lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//social-calendar//EN",
@@ -1311,40 +1357,23 @@ def _ics_document(rows, calendar_name: str) -> str:
 
     tz = config.load()["timezone"]
     for r in rows:
-        start = r["starts_at"]
-        if r["start_time_known"] and "T" in start:
-            d = dt.datetime.fromisoformat(start)
-            dtstart = f"DTSTART;TZID={tz}:{d:%Y%m%dT%H%M%S}"
-            dtend = f"DTEND;TZID={tz}:{d + dt.timedelta(hours=2):%Y%m%dT%H%M%S}"
+        event = _calendar_event_fields(r)
+        if event["all_day"]:
+            dtstart = f"DTSTART;VALUE=DATE:{event['start']:%Y%m%d}"
+            dtend = f"DTEND;VALUE=DATE:{event['end']:%Y%m%d}"
         else:
-            day = dt.date.fromisoformat(start[:10])
-            dtstart = f"DTSTART;VALUE=DATE:{day:%Y%m%d}"
-            dtend = f"DTEND;VALUE=DATE:{day + dt.timedelta(days=1):%Y%m%d}"
-
-        desc = " | ".join(x for x in [
-            # Your own note leads: on a phone the description is often all you
-            # see, and "book the 6:40 train" outranks the price of the ticket.
-            r["notes"] if "notes" in r.keys() else None,
-            r["price_text"],
-            "tickets: " + r["ticket_url"] if r["ticket_url"] else None,
-            f"source: @{r['attributed_handle']}" if r["attributed_handle"] else None,
-            r["permalink"],
-            "NEEDS REVIEW: " + (r["review_reason"] or "") if r["needs_review"] else None,
-        ] if x)
-
-        title = r["title"] or "(untitled)"
-        if r["needs_review"]:
-            title = "⚠ " + title
+            dtstart = f"DTSTART;TZID={tz}:{event['start']:%Y%m%dT%H%M%S}"
+            dtend = f"DTEND;TZID={tz}:{event['end']:%Y%m%dT%H%M%S}"
 
         lines += [
             "BEGIN:VEVENT",
             f"UID:sc-{r['id']}@social-calendar",
             f"DTSTAMP:{stamp}",
             dtstart, dtend,
-            _fold(f"SUMMARY:{_ics_escape(title)}"),
-            _fold(f"LOCATION:{_ics_escape(r['venue_name'])}"),
-            _fold(f"DESCRIPTION:{_ics_escape(desc)}"),
-            f"URL:{r['permalink'] or ''}",
+            _fold(f"SUMMARY:{_ics_escape(event['title'])}"),
+            _fold(f"LOCATION:{_ics_escape(event['location'])}"),
+            _fold(f"DESCRIPTION:{_ics_escape(event['notes'])}"),
+            f"URL:{event['url']}",
             "END:VEVENT",
         ]
     lines.append("END:VCALENDAR")

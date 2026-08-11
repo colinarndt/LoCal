@@ -27,17 +27,21 @@ import socket
 import sys
 import threading
 import time
+import re
 
 import objc
 from AppKit import (NSApplication, NSApplicationActivationPolicyAccessory,
                     NSApplicationActivationPolicyRegular, NSBackingStoreBuffered,
                     NSButton, NSFont, NSImage, NSMenu, NSMenuItem, NSObject,
-                    NSScreen, NSSecureTextField, NSTextField,
+                    NSAlert, NSScreen, NSSecureTextField, NSTextField,
+                    NSApplicationActivateAllWindows, NSApplicationActivateIgnoringOtherApps,
+                    NSRunningApplication,
                     NSUserNotificationCenter, NSVariableStatusItemLength, NSStatusBar, NSWindow,
                     NSWorkspace,
                     NSWindowStyleMaskClosable, NSWindowStyleMaskMiniaturizable,
                     NSWindowStyleMaskResizable, NSWindowStyleMaskTitled)
-from Foundation import NSMakeRect, NSTimer, NSURL, NSURLRequest
+from EventKit import EKEntityTypeEvent, EKEvent, EKEventStore, EKSpanThisEvent
+from Foundation import NSDate, NSMakeRect, NSTimer, NSURL, NSURLRequest
 from WebKit import (WKNavigationActionPolicyAllow, WKNavigationActionPolicyCancel,
                     WKWebView, WKWebViewConfiguration)
 
@@ -110,7 +114,7 @@ def _money(usd: float) -> str:
     return f"${usd:,.2f}"
 
 
-def _install_main_menu(app) -> None:
+def _install_main_menu(app, delegate) -> None:
     """Install the standard responder-chain editing shortcuts.
 
     AppKit does not synthesize these for a programmatic menu-bar application.
@@ -126,6 +130,16 @@ def _install_main_menu(app) -> None:
     main.addItem_(app_root)
     app_menu = NSMenu.alloc().initWithTitle_("LoCal")
     app_root.setSubmenu_(app_menu)
+    settings = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Settings…", "showSettings:", ",")
+    settings.setTarget_(delegate)
+    app_menu.addItem_(settings)
+    app_menu.addItem_(NSMenuItem.separatorItem())
+    # This is normally supplied by a stock app menu. LoCal builds its own so
+    # the editing shortcuts work in WKWebView, which means we add Cmd-H too.
+    app_menu.addItem_(NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Hide LoCal", "hide:", "h"))
+    app_menu.addItem_(NSMenuItem.separatorItem())
     app_menu.addItem_(NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
         "Quit LoCal", "terminate:", "q"))
 
@@ -146,8 +160,18 @@ def _install_main_menu(app) -> None:
     app.setMainMenu_(main)
 
 
+_EVENT_ICS_PATH = re.compile(r"^/event/(\d+)/calendar\.ics$")
+
+
 class ExternalLinkDelegate(NSObject):
-    """Send `target=_blank` links from the embedded calendar to the browser."""
+    """Open external links, while adding LoCal events natively on macOS."""
+
+    def initWithAppDelegate_(self, app_delegate):
+        self = objc.super(ExternalLinkDelegate, self).init()
+        if self is None:
+            return None
+        self.app_delegate = app_delegate
+        return self
 
     def webView_decidePolicyForNavigationAction_decisionHandler_(
             self, webview, action, decision_handler):
@@ -155,6 +179,13 @@ class ExternalLinkDelegate(NSObject):
         url = action.request().URL()
         scheme = str(url.scheme() or "").lower() if url else ""
         if target_frame is None and scheme in {"http", "https", "mailto"}:
+            path = str(url.path() or "") if url else ""
+            event = _EVENT_ICS_PATH.fullmatch(path)
+            if (event and scheme == "http" and str(url.host() or "") == "127.0.0.1"
+                    and int(url.port() or 80) == self.app_delegate.port):
+                self.app_delegate.add_event_to_calendar(int(event.group(1)))
+                decision_handler(WKNavigationActionPolicyCancel)
+                return
             NSWorkspace.sharedWorkspace().openURL_(url)
             decision_handler(WKNavigationActionPolicyCancel)
             return
@@ -175,6 +206,10 @@ class AppDelegate(NSObject):
         self.link_delegate = None
         self.keys_window = None
         self.key_fields = {}
+        self.event_store = EKEventStore.alloc().init()
+        # PyObjC marks EventKit's completion block as unretained, so retain it
+        # until the asynchronous permission prompt has answered.
+        self.calendar_access_callbacks = []
         self._stop = threading.Event()
         return self
 
@@ -253,6 +288,7 @@ class AppDelegate(NSObject):
         dock = self._item("Show in Dock", "toggleDock:")
         dock.setState_(1 if config.load().get("show_in_dock", False) else 0)
         self.menu.addItem_(dock)
+        self.menu.addItem_(self._item("Settings…", "showSettings:"))
         self.menu.addItem_(self._item("API Keys…", "showKeys:"))
 
         self.menu.addItem_(NSMenuItem.separatorItem())
@@ -345,7 +381,7 @@ class AppDelegate(NSObject):
             self.window.contentView().bounds(), config)
         # WKWebView ignores target=_blank by default. Keep a strong reference
         # to the delegate, then pass external pages and ticket links to macOS.
-        self.link_delegate = ExternalLinkDelegate.alloc().init()
+        self.link_delegate = ExternalLinkDelegate.alloc().initWithAppDelegate_(self)
         self.webview.setNavigationDelegate_(self.link_delegate)
         self.webview.setAutoresizingMask_(1 << 1 | 1 << 4)   # width | height
         self.webview.loadRequest_(
@@ -354,6 +390,104 @@ class AppDelegate(NSObject):
 
     def fetchNow_(self, sender):
         self._start_run("menu bar")
+
+    def showSettings_(self, sender):
+        if self.window is None:
+            self._build_window()
+        self.webview.loadRequest_(NSURLRequest.requestWithURL_(
+            NSURL.URLWithString_(self.url + "settings")))
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        self.window.makeKeyAndOrderFront_(None)
+
+    # --- Calendar -----------------------------------------------------------
+
+    @objc.python_method
+    def add_event_to_calendar(self, event_id: int) -> None:
+        """Ask Calendar permission if needed, then add one LoCal event.
+
+        The web UI uses this same event representation to generate its ICS
+        download. The app replaces that download with EventKit so clicking the
+        shared button never leaves a temporary file behind on a Mac.
+        """
+        event = web.calendar_event_fields(event_id)
+        if event is None:
+            self._show_calendar_error("That event is no longer available.")
+            return
+
+        def complete(granted, error):
+            try:
+                if granted:
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "saveCalendarEvent:", event, False)
+                else:
+                    detail = str(error) if error else "Calendar access was not granted."
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "showCalendarError:", detail, False)
+            finally:
+                self.calendar_access_callbacks.remove(complete)
+
+        # macOS 14 calls this "full access". Keep the older API for app builds
+        # running on earlier supported versions of macOS.
+        self.calendar_access_callbacks.append(complete)
+        request_full = getattr(self.event_store, "requestFullAccessToEventsWithCompletion_", None)
+        if request_full is not None:
+            request_full(complete)
+        else:
+            self.event_store.requestAccessToEntityType_completion_(EKEntityTypeEvent, complete)
+
+    def saveCalendarEvent_(self, event):
+        try:
+            native = EKEvent.eventWithEventStore_(self.event_store)
+            native.setTitle_(event["title"])
+            native.setStartDate_(self._calendar_date(event["start"]))
+            native.setEndDate_(self._calendar_date(event["end"]))
+            native.setAllDay_(event["all_day"])
+            native.setLocation_(event["location"])
+            native.setNotes_(event["notes"])
+            if event["url"]:
+                native.setURL_(NSURL.URLWithString_(event["url"]))
+            calendar = self.event_store.defaultCalendarForNewEvents()
+            if calendar is None:
+                raise RuntimeError("No writable default calendar is configured.")
+            native.setCalendar_(calendar)
+            if not self.event_store.saveEvent_span_commit_error_(
+                    native, EKSpanThisEvent, True, None):
+                raise RuntimeError("Calendar did not save the event.")
+            self._show_calendar_app()
+        except Exception as exc:
+            self._show_calendar_error(f"Could not add the event: {exc}")
+
+    @objc.python_method
+    def _calendar_date(self, value):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=config.tzinfo())
+        return NSDate.dateWithTimeIntervalSince1970_(value.timestamp())
+
+    @objc.python_method
+    def _show_calendar_app(self) -> None:
+        """Bring the destination app forward so a successful add is visible."""
+        workspace = NSWorkspace.sharedWorkspace()
+        apps = NSRunningApplication.runningApplicationsWithBundleIdentifier_(
+            "com.apple.iCal")
+        if not apps:
+            if not workspace.launchApplication_("Calendar"):
+                raise RuntimeError("Calendar could not be opened.")
+            apps = NSRunningApplication.runningApplicationsWithBundleIdentifier_(
+                "com.apple.iCal")
+        for app in apps:
+            app.activateWithOptions_(
+                NSApplicationActivateAllWindows | NSApplicationActivateIgnoringOtherApps)
+
+    def showCalendarError_(self, detail):
+        self._show_calendar_error(str(detail))
+
+    @objc.python_method
+    def _show_calendar_error(self, detail: str) -> None:
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Could not add this event to Calendar")
+        alert.setInformativeText_(detail)
+        alert.addButtonWithTitle_("OK")
+        alert.runModal()
 
     # --- API keys -----------------------------------------------------------
     #
@@ -556,11 +690,11 @@ def main() -> None:
     time.sleep(0.4)
 
     app = NSApplication.sharedApplication()
-    _install_main_menu(app)
     # Accessory: menu bar only, no Dock icon and no menu bar takeover.
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     delegate = AppDelegate.alloc().initWithPort_(port)
     app.setDelegate_(delegate)
+    _install_main_menu(app, delegate)
     print(f"serving http://localhost:{port}  ICS: http://localhost:{port}/calendar.ics")
     app.run()
 

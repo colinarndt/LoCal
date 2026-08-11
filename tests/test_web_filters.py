@@ -326,6 +326,25 @@ def test_event_calendar_download_contains_only_the_selected_event(tmp_path, monk
     assert b"LOCATION:Example Room" in response.data
     assert b"tickets: https://tickets.example/show" in response.data
     assert b"UID:sc-1@social-calendar" in response.data
+    assert b"DTSTART;TZID=America/New_York:20260801T200000" in response.data
+    assert b"DTEND;TZID=America/New_York:20260801T210000" in response.data
+
+
+def test_event_calendar_export_preserves_an_explicit_end_time(tmp_path, monkeypatch):
+    path = tmp_path / "calendar.db"
+    with db.session(path) as conn:
+        conn.execute(
+            "INSERT INTO source_post (post_id,polled_handle,posted_at,fetched_at) "
+            "VALUES ('p1','venue','2026-07-29','now')")
+        conn.execute(
+            "INSERT INTO event (post_id,title,starts_at,ends_at,start_time_known,created_at) "
+            "VALUES ('p1','Late Show','2026-08-01T20:00:00','2026-08-01T22:30:00',1,'now')")
+
+    monkeypatch.setitem(web.app.config, "DB", str(path))
+    response = web.app.test_client().get("/event/1/calendar.ics")
+
+    assert b"DTSTART;TZID=America/New_York:20260801T200000" in response.data
+    assert b"DTEND;TZID=America/New_York:20260801T223000" in response.data
 
 
 def test_csv_link_uses_a_browser_download_instead_of_replacing_the_app_view(tmp_path, monkeypatch):
