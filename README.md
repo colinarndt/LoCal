@@ -35,14 +35,13 @@ LoCal tracks local events from your favorite venues and artists, so you never mi
 ## Your sources, one calendar
 
 **Venue calendars**<br>
+See everything coming up at your favorite local spots.
 
 **Performer tour pages**<br>
-LoCal adds upcoming dates close to you and can alert you when a new show is announced by you.
+LoCal looks for dates close to you and alerts you when a new show is announced by you.
 
 **Instagram accounts**<br>
-LoCal reads post captions and graphics to pull down event info.
-
-When several sources list the same event, LoCal only keeps one entry.
+Note: API keys required for scraping and image processing.
 
 ## Features
 
