@@ -69,6 +69,17 @@ NO_UPCOMING_DATES = """<!doctype html><html><body>
 <main><h1>Tour Dates</h1><p>No upcoming tour dates right now. Check back soon.</p></main>
 </body></html>"""
 
+RADY_SHELL = """<!doctype html><html><body><script>
+n.performances=[
+  {performanceId:10121,title:"Summer Concert: O\\'Brien",location:"The Rady Shell at Jacobs Park",
+   moreDetailsUrl:"/performances/summer-concert/",performanceDate:"2026-08-21T19:00:00-07:00",
+   performanceType:"Rady Shell Summer Season"},
+  {performanceId:10122,title:"Morning Yoga",location:"The Rady Shell at Jacobs Park",
+   moreDetailsUrl:"/performances/morning-yoga/",performanceDate:"2026-08-22T09:30:00-07:00",
+   performanceType:"Rady Shell Community Event"}
+];
+</script></body></html>"""
+
 RIVERSIDE_EMPTY = """<!doctype html><html><body>
 <h3><span>UPCOMING</span></h3><div class="event-list"><header>DATE</header></div></div>
 <h3>PAST</h3>
@@ -664,6 +675,21 @@ def test_fetch_events_falls_back_to_supported_html_cards():
 
     assert kind == "html-cards"
     assert len(events) == 2
+
+
+def test_fetch_events_parses_rady_shells_serialized_performances():
+    source = {"url": "https://www.theshell.org/performances/rady-shell-calendar/",
+              "etag": None, "last_modified": None}
+    events, kind, _, _ = websites.fetch_events(source, opener_for(RADY_SHELL))
+
+    assert kind == "rady-shell"
+    assert len(events) == 2
+    assert events[0].external_id == "rady-shell:10121"
+    assert events[0].title == "Summer Concert: O'Brien"
+    assert events[0].starts_at == "2026-08-21T22:00:00"
+    assert events[0].venue_name == "The Rady Shell at Jacobs Park"
+    assert events[0].permalink == "https://www.theshell.org/performances/summer-concert/"
+    assert events[0].category == "music"
 
 
 def test_fetch_events_retries_incomplete_redirect_response_at_canonical_url():
