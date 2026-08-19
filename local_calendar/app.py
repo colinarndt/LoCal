@@ -28,6 +28,7 @@ import sys
 import threading
 import time
 import re
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import objc
 from AppKit import (NSApplication, NSApplicationActivationPolicyAccessory,
@@ -178,6 +179,10 @@ class ExternalLinkDelegate(NSObject):
         target_frame = action.targetFrame()
         url = action.request().URL()
         scheme = str(url.scheme() or "").lower() if url else ""
+        if self.app_delegate.needs_api_key_prompt(url):
+            self.app_delegate.prompt_for_api_keys(str(url.absoluteString()))
+            decision_handler(WKNavigationActionPolicyCancel)
+            return
         if target_frame is None and scheme in {"http", "https", "mailto"}:
             path = str(url.path() or "") if url else ""
             event = _EVENT_ICS_PATH.fullmatch(path)
@@ -244,11 +249,8 @@ class AppDelegate(NSObject):
         # running in the menu bar, which is the behaviour that actually matters.
         self.openCalendar_(None)
 
-        # First run: nothing works without keys, and the calendar behind this
-        # window will be empty, so ask straight away rather than letting someone
-        # discover it via a failed fetch.
-        if missing_keys():
-            self.showKeys_(None)
+        # Website calendars work without API keys. Instagram credentials are
+        # requested only after someone actually adds an Instagram account.
 
     def applicationShouldTerminateAfterLastWindowClosed_(self, sender):
         # Closing the calendar window hides it; the app lives in the menu bar.
@@ -390,6 +392,31 @@ class AppDelegate(NSObject):
 
     def fetchNow_(self, sender):
         self._start_run("menu bar")
+
+    @objc.python_method
+    def needs_api_key_prompt(self, url) -> bool:
+        """Whether the embedded Sources page requested the native key window."""
+        if url is None or str(url.scheme() or "").lower() != "http":
+            return False
+        if (str(url.host() or "") != "127.0.0.1"
+                or int(url.port() or 80) != self.port
+                or str(url.path() or "") != "/discover"):
+            return False
+        return ("need_keys", "1") in parse_qsl(str(url.query() or ""),
+                                                   keep_blank_values=True)
+
+    @objc.python_method
+    def prompt_for_api_keys(self, url: str) -> None:
+        """Open native key entry once, then remove the one-shot URL marker."""
+        parsed = urlsplit(url)
+        query = [(key, value) for key, value in parse_qsl(
+            parsed.query, keep_blank_values=True)
+                 if not (key == "need_keys" and value == "1")]
+        clean_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path,
+                                urlencode(query), parsed.fragment))
+        self.webview.loadRequest_(NSURLRequest.requestWithURL_(
+            NSURL.URLWithString_(clean_url)))
+        self.showKeys_(None)
 
     def showSettings_(self, sender):
         if self.window is None:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-calendar"
-version = "0.4.2"
+version = "0.4.3"
 description = "A local event calendar built from Instagram, venue, and performer sources."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,6 +26,7 @@ browser = ["playwright>=1.50"]
 # a macOS-only dependency tree.
 app = [
     "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
     "pyobjc-framework-WebKit>=10.0; sys_platform == 'darwin'",
     "pyobjc-framework-EventKit>=10.0; sys_platform == 'darwin'",
 ]

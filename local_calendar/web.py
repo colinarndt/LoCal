@@ -964,6 +964,7 @@ def discover():
             "WHERE ws.enabled=1 AND ws.source_type='performer' GROUP BY ws.id ORDER BY ws.name").fetchall()
         return render_template("discover.html", queue=discovery.pending(conn),
                                polled=polled, added=request.args.get("added"),
+                               need_keys=request.args.get("need_keys") == "1",
                                website_sources=website_sources,
                                performer_sources=performer_sources,
                                website_added=request.args.get("website_added"),
@@ -1008,6 +1009,11 @@ def add_account():
     if not HANDLE_RE.match(raw):
         return _source_redirect(trip_id, err="bad-handle")
 
+    # Website sources do not spend or need credentials. The app's native key
+    # window is opened from this one-shot marker after a person deliberately
+    # adds an Instagram account; a remote browser instead sees the safe hint.
+    need_keys = any(not os.getenv(name) for name, _, _ in config.API_KEYS)
+
     with db.session(app.config["DB"]) as conn:
         if trip_id and trips.get(conn, trip_id) is None:
             return redirect(url_for("trips_page", err="no-trip"))
@@ -1024,7 +1030,8 @@ def add_account():
             "(?,1,0,'manual',datetime('now'),'approved','added by hand',?) "
             "ON CONFLICT(handle) DO UPDATE SET is_polled=1, status='approved', "
             "trip_id=excluded.trip_id", (raw, trip_id))
-    return _source_redirect(trip_id, added=raw)
+    return _source_redirect(trip_id, added=raw,
+                            **({"need_keys": "1"} if need_keys else {}))
 
 
 @app.post("/discover/website/add")
