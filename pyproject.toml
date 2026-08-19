@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
+browser = ["playwright>=1.50"]
 # The menubar app. Kept optional so a headless/Linux install does not pull in
 # a macOS-only dependency tree.
 app = [

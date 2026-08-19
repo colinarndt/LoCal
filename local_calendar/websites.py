@@ -1382,17 +1382,21 @@ def _parse_response(data: bytes, headers: dict, final_url: str,
 
 
 def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen,
-                 extractor=None, model_cache: sqlite3.Row | dict | None = None):
+                 extractor=None, model_cache: sqlite3.Row | dict | None = None,
+                 renderer=None):
     request_url = source["url"]
     last_headers: dict = {}
     last_final_url = request_url
     last_text = ""
+    rendered = None
+    source_format = (source.get("format") if isinstance(source, dict) else source["format"])
+    render_again = bool(renderer and str(source_format or "").startswith("model-rendered"))
     for attempt in range(4):
         try:
             data, headers, final_url = _request(
                 request_url,
-                source["etag"] if attempt == 0 else None,
-                source["last_modified"] if attempt == 0 else None,
+                source["etag"] if attempt == 0 and not render_again else None,
+                source["last_modified"] if attempt == 0 and not render_again else None,
                 opener,
                 fresh=attempt > 0,
             )
@@ -1488,7 +1492,15 @@ def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen,
         # never retry a complete page that is simply unsupported.
         request_url = final_url
 
-    page_text, links = model_page_text(last_text, last_final_url)
+    if renderer is not None:
+        try:
+            rendered = renderer.render(last_final_url)
+        except (OSError, ValueError):
+            rendered = None
+    if rendered is not None:
+        page_text, links = rendered.evidence, rendered.links
+    else:
+        page_text, links = model_page_text(last_text, last_final_url)
     digest = hashlib.sha256(page_text.encode()).hexdigest()
     from .extract import WEBSITE_PROMPT_VERSION
 
@@ -1513,13 +1525,13 @@ def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen,
         if isinstance(output, dict):
             raw_output = cached("raw_output")
             model = cached("model")
-            kind = "model-cache"
+            kind = "model-rendered-cache" if rendered is not None else "model-cache"
     elif extractor is not None and page_text:
         output = extractor.website(page_text, last_final_url)
         raw_output = json.dumps(output, ensure_ascii=False)
         model = (extractor.model_for("website") if hasattr(extractor, "model_for")
                  else getattr(extractor, "model", "nano"))
-        kind = "model-html"
+        kind = "model-rendered" if rendered is not None else "model-html"
     else:
         output = None
 
@@ -1962,7 +1974,7 @@ def _upsert_event(conn: sqlite3.Connection, source, event: StructuredEvent,
 
 
 def poll_source(conn: sqlite3.Connection, source_id: int,
-                opener=urllib.request.urlopen, extractor=None) -> dict:
+                opener=urllib.request.urlopen, extractor=None, renderer=None) -> dict:
     source = conn.execute("SELECT * FROM web_source WHERE id=?", (source_id,)).fetchone()
     if source is None:
         raise ValueError("no such website source")
@@ -1970,7 +1982,8 @@ def poll_source(conn: sqlite3.Connection, source_id: int,
     try:
         cache = conn.execute(
             "SELECT * FROM web_parse_cache WHERE source_id=?", (source_id,)).fetchone()
-        result = fetch_events(source, opener, extractor=extractor, model_cache=cache)
+        result = fetch_events(source, opener, extractor=extractor, model_cache=cache,
+                              renderer=renderer)
         events, kind, headers, _ = result
         if events is None:
             conn.execute(
@@ -2032,7 +2045,8 @@ def poll_source(conn: sqlite3.Connection, source_id: int,
 
 
 def poll_all(conn: sqlite3.Connection, source_ids: list[int] | None = None,
-             log=lambda *_: None, opener=urllib.request.urlopen, extractor=None) -> dict:
+             log=lambda *_: None, opener=urllib.request.urlopen, extractor=None,
+             renderer=None) -> dict:
     where, params = "enabled=1", []
     if source_ids is not None:
         if not source_ids:
@@ -2045,7 +2059,8 @@ def poll_all(conn: sqlite3.Connection, source_ids: list[int] | None = None,
              "errors": 0, "error_messages": []}
     for row in rows:
         log(f"checking {row['name']} website")
-        result = poll_source(conn, row["id"], opener, extractor=extractor)
+        result = poll_source(conn, row["id"], opener, extractor=extractor,
+                             renderer=renderer)
         for key in ("found", "new", "updated", "alerts"):
             total[key] += result.get(key, 0)
         total["errors"] += int("error" in result)
