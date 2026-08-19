@@ -330,6 +330,35 @@ def test_event_calendar_download_contains_only_the_selected_event(tmp_path, monk
     assert b"DTEND;TZID=America/New_York:20260801T210000" in response.data
 
 
+def test_adding_an_instagram_account_requests_keys_only_when_missing(tmp_path, monkeypatch):
+    path = tmp_path / "calendar.db"
+    monkeypatch.setitem(web.app.config, "DB", str(path))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("APIFY_TOKEN", raising=False)
+
+    response = web.app.test_client().post("/discover/add", data={"handle": "venue"})
+
+    assert "added=venue" in response.headers["Location"]
+    assert "need_keys=1" in response.headers["Location"]
+    with db.read_session(path) as conn:
+        assert conn.execute("SELECT is_polled FROM account WHERE handle='venue'").fetchone()[0] == 1
+
+    page = web.app.test_client().get(response.headers["Location"])
+    assert b"Instagram fetching needs API keys" in page.data
+
+
+def test_adding_an_instagram_account_does_not_prompt_when_keys_are_set(tmp_path, monkeypatch):
+    path = tmp_path / "calendar.db"
+    monkeypatch.setitem(web.app.config, "DB", str(path))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("APIFY_TOKEN", "test-token")
+
+    response = web.app.test_client().post("/discover/add", data={"handle": "venue"})
+
+    assert "added=venue" in response.headers["Location"]
+    assert "need_keys" not in response.headers["Location"]
+
+
 def test_event_calendar_export_preserves_an_explicit_end_time(tmp_path, monkeypatch):
     path = tmp_path / "calendar.db"
     with db.session(path) as conn:

@@ -81,6 +81,10 @@
   <p class="msg">Added @{{ added }} — polled on the next scheduled run.
     {{ fetch_button(added, 'or fetch it now') }}</p>
 {% endif %}
+{% if need_keys %}
+  <p class="msg warn">Instagram fetching needs API keys. On your Mac, open
+    LoCal’s menu and choose <strong>API Keys…</strong> to continue.</p>
+{% endif %}
 {% if approved %}
   <p class="msg">Approved @{{ approved }} — polled on the next scheduled run.
     {{ fetch_button(approved, 'or fetch it now') }}</p>
