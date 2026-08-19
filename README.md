@@ -92,9 +92,10 @@ keys stay on your Mac.
 Add the local sources you already trust. Website calendars with structured event
 data go straight into LoCal. Instagram posts go through a small caption check so
 LoCal can skip ordinary updates; it only reads the flyer when a post looks like
-an event. For a venue page without useful structured data, LoCal can send its
-sanitized visible text to a small model and validates event links against the
-page before importing them.
+an event. For a venue page without useful structured data, LoCal can render the
+page locally, reduce its visible event cards to safe evidence, then send that
+evidence to a small model. It validates event titles and links against the page
+before importing them.
 
 LoCal then groups duplicate listings, finds venue locations, drops wrong-metro
 matches, and turns patterns such as “every Thursday” into dates on your
@@ -123,6 +124,17 @@ LoCal uses [OpenAI](https://platform.openai.com/api-keys) to read event flyers
 and unsupported venue pages, and [Apify](https://console.apify.com/settings/integrations)
 to fetch public Instagram posts. Structured website calendars do not require
 either service.
+
+For JavaScript and widget calendars in a source install, add the optional local
+browser runtime once:
+
+```bash
+pip install ".[browser]"
+python -m playwright install chromium
+```
+
+It runs only after LoCal's static parsers fail. Set
+`LOCAL_CALENDAR_RENDER_WEBSITES=0` to disable it.
 
 **4. Add sources.**
 

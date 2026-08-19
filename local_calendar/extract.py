@@ -39,7 +39,7 @@ GATE_MODEL: str | None = "gpt-5.4-nano"
 # inexpensive model as the caption gate. This is only a last resort: the
 # website pipeline tries iCalendar, JSON-LD, and known HTML cards first.
 WEBSITE_MODEL: str | None = GATE_MODEL
-WEBSITE_PROMPT_VERSION = "website-v1"
+WEBSITE_PROMPT_VERSION = "website-v2"
 
 WEBSITE_SYSTEM = """\
 You extract public events from the visible text of a venue or organization web
@@ -54,6 +54,10 @@ construct or guess a URL. Preserve the page's local time and emit
 ISO 8601 without converting time zones. If no start time is stated, return a
 date only and set start_time_known to false. Use null for optional facts that
 are not stated. Keep descriptions short and factual.
+
+When a trusted retrieval date is supplied and an event gives a month and day
+without a year, use the next matching calendar date on or after that retrieval
+date. If the year is still ambiguous, do not return the event.
 
 Classify plays, musicals, Broadway productions, and staged dramatic work as
 theater; stand-up and improv as comedy; concerts and live music as music.

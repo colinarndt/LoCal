@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import sqlite3
 
-from . import avatars, discovery, geo, pipeline, spend, websites
+from . import avatars, discovery, geo, pipeline, render, spend, websites
 
 
 HISTORY_WINDOW = "30 days"
@@ -91,7 +91,10 @@ def poll(conn: sqlite3.Connection, source, extractor, handles: list[str],
     # candidates for the Instagram caption pre-match below, which is how a
     # clear repeat announcement avoids a vision call in the same run.
     stats["websites"] = websites.poll_all(
-        conn, source_ids=website_source_ids, log=log, extractor=extractor)
+        conn, source_ids=website_source_ids, log=log, extractor=extractor,
+        # Rendering supplies evidence for the model fallback, so avoid starting
+        # a browser at all when no OpenAI extractor is configured.
+        renderer=render.configured_renderer() if extractor is not None else None)
     # Website-only runs do not enter pipeline.process, so their nano call still
     # needs an explicit drain into the spend ledger here.
     spend.drain_into(conn, getattr(extractor, "meter", None))
