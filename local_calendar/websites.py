@@ -965,6 +965,111 @@ def parse_jsonld(page: str, base_url: str) -> list[StructuredEvent]:
     return _disambiguate_occurrences(out)
 
 
+def _js_string(text: str, start: int) -> tuple[str | None, int]:
+    """Read one JavaScript-quoted string without evaluating page code."""
+    if start >= len(text) or text[start] not in "\"'":
+        return None, start
+    quote = text[start]
+    chars: list[str] = []
+    index = start + 1
+    escapes = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
+    while index < len(text):
+        char = text[index]
+        if char == quote:
+            return "".join(chars), index + 1
+        if char != "\\":
+            chars.append(char)
+            index += 1
+            continue
+        index += 1
+        if index >= len(text):
+            break
+        escaped = text[index]
+        if escaped == "u" and index + 4 < len(text):
+            try:
+                chars.append(chr(int(text[index + 1:index + 5], 16)))
+                index += 5
+                continue
+            except ValueError:
+                pass
+        chars.append(escapes.get(escaped, escaped))
+        index += 1
+    return None, index
+
+
+def _js_field(text: str, name: str) -> str | None:
+    """Return a quoted field from a serialized JavaScript object."""
+    match = re.search(rf"\b{re.escape(name)}\s*:\s*", text)
+    if not match:
+        return None
+    value, _ = _js_string(text, match.end())
+    return value
+
+
+def _js_objects_after(page: str, marker: str) -> list[str]:
+    """Extract top-level object literals from one JavaScript array safely."""
+    start = page.find(marker)
+    if start < 0:
+        return []
+    array_start = page.find("[", start + len(marker))
+    if array_start < 0:
+        return []
+    objects: list[str] = []
+    depth = 0
+    object_start = None
+    index = array_start + 1
+    while index < len(page):
+        char = page[index]
+        if char in "\"'":
+            _, index = _js_string(page, index)
+            continue
+        if char == "{":
+            if depth == 0:
+                object_start = index
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+            if depth == 0 and object_start is not None:
+                objects.append(page[object_start:index + 1])
+                object_start = None
+        elif char == "]" and depth == 0:
+            return objects
+        index += 1
+    return []
+
+
+def parse_rady_shell_events(page: str, base_url: str) -> list[StructuredEvent]:
+    """Parse The Rady Shell's server-provided Angular event data.
+
+    The calendar's visible cards are rendered from `n.performances`, a static
+    JavaScript array in its HTML response. This reads only the event fields;
+    it never evaluates page JavaScript or sends it to the model fallback.
+    """
+    host = (urllib.parse.urlsplit(base_url).hostname or "").lower()
+    if host not in {"theshell.org", "www.theshell.org"}:
+        return []
+    events: list[StructuredEvent] = []
+    for item in _js_objects_after(page, "n.performances="):
+        event_id_match = re.search(r"\bperformanceId\s*:\s*(\d+)", item)
+        event_id = event_id_match.group(1) if event_id_match else None
+        title = _js_field(item, "title")
+        starts_at, known = _local_iso(_js_field(item, "performanceDate"))
+        permalink = _js_field(item, "moreDetailsUrl")
+        if not (event_id and title and starts_at and permalink):
+            continue
+        location = _js_field(item, "location")
+        kind = _js_field(item, "performanceType") or ""
+        url = urllib.parse.urljoin(base_url, permalink)
+        events.append(StructuredEvent(
+            external_id=f"rady-shell:{event_id}", title=title,
+            starts_at=starts_at, start_time_known=known,
+            venue_name=location, permalink=url,
+            category=_category(f"{title} {kind}"),
+            raw={"parser": "rady-shell", "performance_id": event_id},
+        ))
+    return _disambiguate_occurrences(events)
+
+
 def _unescape_ics(value: str) -> str:
     return (value.replace("\\n", "\n").replace("\\N", "\n")
             .replace("\\,", ",").replace("\\;", ";").replace("\\\\", "\\"))
@@ -1259,6 +1364,9 @@ def _parse_response(data: bytes, headers: dict, final_url: str,
     events = parse_event_cards(text, final_url)
     if events:
         return events, "html-cards", final_url
+    events = parse_rady_shell_events(text, final_url)
+    if events:
+        return events, "rady-shell", final_url
     if urllib.parse.urlsplit(final_url).netloc.endswith("riversideband.pl"):
         recognized, events = parse_riverside_events(
             text, final_url, source["name"] if source is not None else None)
