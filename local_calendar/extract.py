@@ -33,7 +33,10 @@ GATE_MODEL: str | None = None
 # inexpensive model as the caption gate. This is only a last resort: the
 # website pipeline tries iCalendar, JSON-LD, and known HTML cards first.
 WEBSITE_MODEL: str | None = None
-WEBSITE_PROMPT_VERSION = "website-v2"
+# v3: cap broad venue listings and give their JSON enough room. This also
+# invalidates old cached incomplete responses created before the output fix.
+WEBSITE_PROMPT_VERSION = "website-v3"
+WEBSITE_MAX_OUTPUT_TOKENS = 32_768
 
 WEBSITE_SYSTEM = """\
 You extract public events from the visible text of a venue or organization web
@@ -55,6 +58,10 @@ date. If the year is still ambiguous, do not return the event.
 
 Classify plays, musicals, Broadway productions, and staged dramatic work as
 theater; stand-up and improv as comedy; concerts and live music as music.
+
+If the page contains more than 100 dated upcoming occurrences, return only the
+100 nearest occurrences. Keep descriptions short so every selected event fits
+in the response.
 """
 
 _NULLABLE_STRING = {"anyOf": [{"type": "string"}, {"type": "null"}]}
@@ -63,7 +70,7 @@ WEBSITE_SCHEMA = {
     "properties": {
         "events": {
             "type": "array",
-            "maxItems": 200,
+            "maxItems": 100,
             "items": {
                 "type": "object",
                 "properties": {
@@ -243,5 +250,5 @@ class Extractor:
             [{"type": "input_text", "text": f"Page URL: {url}\n\n{page_text}"}],
             WEBSITE_SCHEMA,
             "website_events",
-            max_output_tokens=8192,
+            max_output_tokens=WEBSITE_MAX_OUTPUT_TOKENS,
         )

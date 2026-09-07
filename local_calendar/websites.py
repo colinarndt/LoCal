@@ -1515,6 +1515,7 @@ def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen,
     raw_output = None
     model = None
     kind = "unsupported"
+    output = None
     if (cached("content_hash") == digest
             and cached("prompt_version") == WEBSITE_PROMPT_VERSION
             and cached("raw_output")):
@@ -1522,11 +1523,16 @@ def fetch_events(source: sqlite3.Row | dict, opener=urllib.request.urlopen,
             output = json.loads(cached("raw_output"))
         except (TypeError, ValueError):
             output = None
-        if isinstance(output, dict):
+        # A model failure is never a result. Old app versions could persist a
+        # partial response, and replaying it would make every later fetch fail
+        # until the page changed. Ignore it and ask the model again instead.
+        if isinstance(output, dict) and "_error" not in output:
             raw_output = cached("raw_output")
             model = cached("model")
             kind = "model-rendered-cache" if rendered is not None else "model-cache"
-    elif extractor is not None and page_text:
+        else:
+            output = None
+    if output is None and extractor is not None and page_text:
         output = extractor.website(page_text, last_final_url)
         raw_output = json.dumps(output, ensure_ascii=False)
         model = (extractor.model_for("website") if hasattr(extractor, "model_for")

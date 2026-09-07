@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from local_calendar import db, pipeline, spend
-from local_calendar.extract import Extractor
+from local_calendar.extract import Extractor, WEBSITE_MAX_OUTPUT_TOKENS
 from local_calendar.sources import RawPost
 
 
@@ -79,6 +79,13 @@ def test_a_cached_token_is_billed_once_at_the_cached_rate():
     (event,) = ex.meter.drain()
     assert event["usd"] > 0
     assert event["input_tokens"] == 600 and event["cache_read_tokens"] == 400
+
+
+def test_website_extraction_has_room_for_a_large_venue_listing():
+    client = FakeDeepSeek(text='{"events": []}')
+    Extractor(client=client).website("many dated events", "https://venue.example/events")
+
+    assert client.requests[-1]["max_output_tokens"] == WEBSITE_MAX_OUTPUT_TOKENS == 32_768
 
 
 def test_a_refusal_is_still_billed():

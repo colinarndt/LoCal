@@ -1,4 +1,5 @@
 import gzip
+import hashlib
 import json
 import datetime as dt
 
@@ -910,6 +911,28 @@ def test_model_fallback_is_cached_by_sanitized_page_hash():
     assert second["new"] == 0
     assert extractor.calls == 1
     assert conn.execute("SELECT COUNT(*) FROM web_parse_cache").fetchone()[0] == 1
+
+
+def test_model_fallback_retries_an_old_cached_incomplete_response():
+    from local_calendar.extract import WEBSITE_PROMPT_VERSION
+
+    source = {"url": "https://venue.example/events", "etag": None,
+              "last_modified": None}
+    extractor = WebsiteExtractor()
+    page_text, _ = websites.model_page_text(UNSTRUCTURED, source["url"])
+    stale_cache = {
+        "content_hash": hashlib.sha256(page_text.encode()).hexdigest(),
+        "prompt_version": WEBSITE_PROMPT_VERSION,
+        "model": "fake-nano",
+        "raw_output": '{"_error":"incomplete: max_output_tokens"}',
+    }
+
+    events, kind, _, _ = websites.fetch_events(
+        source, opener_for(UNSTRUCTURED), extractor=extractor, model_cache=stale_cache)
+
+    assert extractor.calls == 1
+    assert kind == "model-html"
+    assert len(events) == 1
 
 
 def test_poll_inserts_and_then_updates_one_structured_event():

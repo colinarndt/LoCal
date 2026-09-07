@@ -66,11 +66,13 @@ def test_deepseek_peak_and_off_peak_pricing():
         input_tokens_details=types.SimpleNamespace(cached_tokens=0),
     )
     off_peak = dt.datetime(2026, 9, 5, 12, tzinfo=dt.timezone.utc)
-    peak = dt.datetime(2026, 9, 5, 7, tzinfo=dt.timezone.utc)
+    peak = dt.datetime(2026, 9, 7, 7, tzinfo=dt.timezone.utc)
+    weekend_peak_hour = dt.datetime(2026, 9, 6, 7, tzinfo=dt.timezone.utc)
     model = "deepseek-v4-flash-vision-exp"
 
     assert spend.price_deepseek_tokens(model, usage, off_peak) == 0.88
     assert spend.price_deepseek_tokens(model, usage, peak) == 1.76
+    assert spend.price_deepseek_tokens(model, usage, weekend_peak_hour) == 0.88
 
 
 # --- the meter --------------------------------------------------------------

@@ -51,8 +51,9 @@ OPENAI_PRICES = {
 }
 
 # DeepSeek direct-API pricing in USD per million tokens. Its peak windows are
-# 01:00-04:00 and 06:00-10:00 UTC; every other hour is billed at the off-peak
-# rates. The Responses API reports cached tokens in the same shape as OpenAI.
+# 01:00-04:00 and 06:00-10:00 UTC, Monday through Friday; every other time is
+# billed at the off-peak rates. The Responses API reports cached tokens in the
+# same shape as OpenAI.
 DEEPSEEK_PRICES = {
     "deepseek-v4-flash-vision-exp": {
         "off_peak": (0.22, 0.007, 0.66),
@@ -136,8 +137,10 @@ def price_deepseek_tokens(model: str, usage,
     if rates is None or usage is None:
         return 0.0
     at = at or dt.datetime.now(dt.timezone.utc)
-    hour = at.astimezone(dt.timezone.utc).hour
-    band = "peak" if 1 <= hour < 4 or 6 <= hour < 10 else "off_peak"
+    at_utc = at.astimezone(dt.timezone.utc)
+    hour = at_utc.hour
+    is_peak_hour = 1 <= hour < 4 or 6 <= hour < 10
+    band = "peak" if at_utc.weekday() < 5 and is_peak_hour else "off_peak"
     per_in, per_cached, per_out = rates[band]
     plain_in, cached, write, out = _openai_counts(usage)
     return (plain_in * per_in + write * per_in
