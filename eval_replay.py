@@ -112,7 +112,7 @@ def main() -> int:
     ap.add_argument("--stage", choices=("gate", "extract"), default="gate")
     ap.add_argument("--limit", type=int, default=25)
     ap.add_argument("--rung", type=int, default=extract.DEFAULT_RUNG)
-    ap.add_argument("--model", help="override the rung, e.g. gpt-5.4-nano")
+    ap.add_argument("--model", help="override the rung")
     ap.add_argument("--yes", action="store_true", help="spend the money")
     ap.add_argument("--self", dest="self_check", action="store_true",
                     help="run the model against itself twice, to measure how much "
@@ -125,12 +125,12 @@ def main() -> int:
         print(f"No {args.stage} rows from {BASELINE} to replay.")
         return 1
 
-    # Resolved before building a client: openai.OpenAI() raises without a key,
+    # Resolved before building a client: the SDK raises without a key,
     # so constructing early would turn the cost estimate into a crash for
     # anyone who has not set one up yet.
     model = args.model or extract.RUNGS[args.rung]
-    if model not in spend.OPENAI_PRICES:
-        print(f"!! {model} is not in spend.OPENAI_PRICES -- it would log as $0.00")
+    if model not in spend.DEEPSEEK_PRICES:
+        print(f"!! {model} is not in spend.DEEPSEEK_PRICES -- it would log as $0.00")
         return 1
 
     # Rough, and deliberately over rather than under: gate is caption-only,
@@ -141,8 +141,8 @@ def main() -> int:
     if not args.yes:
         print("\nAdd --yes to run it.")
         return 0
-    if not os.getenv("OPENAI_API_KEY"):
-        print("OPENAI_API_KEY not set.")
+    if not os.getenv("DEEPSEEK_API_KEY"):
+        print("DEEPSEEK_API_KEY not set.")
         return 1
 
     ex = extract.Extractor(rung=args.rung)

@@ -247,7 +247,7 @@ CREATE TABLE IF NOT EXISTS account (
 CREATE TABLE IF NOT EXISTS spend (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     occurred_at        TEXT NOT NULL,        -- ISO 8601 UTC
-    provider           TEXT NOT NULL,        -- anthropic | apify
+    provider           TEXT NOT NULL,        -- anthropic | openai | deepseek | apify
     detail             TEXT,                 -- model id, or apify actor id
     usd                REAL NOT NULL,
     units              REAL,                 -- apify: items scraped. anthropic: null.

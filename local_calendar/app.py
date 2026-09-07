@@ -518,11 +518,9 @@ class AppDelegate(NSObject):
 
     # --- API keys -----------------------------------------------------------
     #
-    # A native window rather than a page in the web UI, and not by accident.
-    # /settings deliberately refuses to accept key values because Flask binds
-    # 0.0.0.0 with no login so a phone can reach it -- a key field there would be
-    # a key field for everyone on the network. This window is not reachable over
-    # the network at all, so it respects that rule instead of reversing it.
+    # This native window remains the place to manage every provider key. The web
+    # settings page also accepts the DeepSeek key over loopback only; LAN clients
+    # never receive that field because Flask binds 0.0.0.0 without a login.
 
     def showKeys_(self, sender):
         if self.keys_window is None:

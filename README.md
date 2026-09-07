@@ -120,7 +120,7 @@ xattr -dr com.apple.quarantine "/Applications/LoCal.app"
 
 **3. Add API keys.**
 
-LoCal uses [OpenAI](https://platform.openai.com/api-keys) to read event flyers
+LoCal uses [DeepSeek](https://platform.deepseek.com/api_keys) to read event flyers
 and unsupported venue pages, and [Apify](https://console.apify.com/settings/integrations)
 to fetch public Instagram posts. Structured website calendars do not require
 either service.
@@ -143,9 +143,9 @@ or performer tour pages. LoCal does not fetch anything until you add it.
 
 ## Cost
 
-Instagram polling uses Apify for fetching and OpenAI for caption and flyer
+Instagram polling uses Apify for fetching and DeepSeek for caption and flyer
 extraction. Venue calendars with usable structured data are free to import. An
-unsupported venue page uses an OpenAI text pass only when the page changes, and
+unsupported venue page uses a DeepSeek text pass only when the page changes, and
 LoCal caches that result.
 
 | Instagram accounts | Rough monthly cost |
@@ -212,6 +212,14 @@ pip install pyinstaller
 ./make_dmg.sh              # -> dist/LoCal.dmg
 ```
 
+Release packaging requires the Developer ID Application certificate for the
+LoCal release account in your login keychain. When exactly one such certificate
+is present, the build selects it automatically; otherwise specify it explicitly:
+
+```bash
+DEVELOPER_ID_APPLICATION="Developer ID Application: Your Name (TEAMID)" ./make_dmg.sh
+```
+
 The build script draws the icon, bundles Python with the app, and creates the
 drag-to-Applications disk image. To run the steps separately:
 
@@ -221,11 +229,12 @@ pyinstaller --noconfirm LoCal.spec
 ./make_dmg.sh --no-build
 ```
 
-The app uses an ad-hoc signature rather than Apple notarization. Verify a built
-image after packaging changes:
+The release build is Developer ID signed but is not notarized. Verify the app
+and disk image after packaging changes:
 
 ```bash
 codesign --verify --deep --strict --verbose=2 "/Volumes/LoCal/LoCal.app"
+codesign --verify --verbose=2 dist/LoCal.dmg
 ```
 
 ## Privacy and security
@@ -236,9 +245,11 @@ Do not expose the web interface to the public internet. It listens on your local
 network so you can reach it from your phone, which means anyone on that network
 could access it.
 
-The web interface never accepts API keys. Set them through the Mac app or
-`local-calendar init`; LoCal stores them in a mode-600 `.env` file in its data
-directory. Nothing leaves your machine except the provider calls needed to fetch
+The web interface accepts a DeepSeek API key only from the same Mac, through its
+loopback connection; other devices on the network cannot view or submit it. You
+can also set keys through the Mac app or `local-calendar init`; LoCal stores
+them in a mode-600 `.env` file in its data directory. Nothing leaves your
+machine except the provider calls needed to fetch
 and read the sources you choose.
 
 ## What this repository excludes

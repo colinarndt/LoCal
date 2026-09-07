@@ -37,8 +37,8 @@ def _env() -> None:
 def _extractor(rung: int):
     from .extract import RUNGS, Extractor
 
-    if not os.getenv("OPENAI_API_KEY"):
-        sys.exit("OPENAI_API_KEY not set.\n  Run `local-calendar init`, or set it in .env.")
+    if not os.getenv("DEEPSEEK_API_KEY"):
+        sys.exit("DEEPSEEK_API_KEY not set.\n  Run `local-calendar init`, or set it in .env.")
     if rung != 1:
         print(f"  !! rung {rung} ({RUNGS[rung]}) is an ESCALATION above the Phase 0 "
               f"production config. Only run with explicit approval.")
@@ -109,8 +109,8 @@ def cmd_init(args) -> None:
     print("\nNow: which Instagram accounts to watch. Nothing is polled until you "
           "approve it.")
     desc = _ask("Describe what you like (blank to skip)", "")
-    if desc and (values.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")):
-        os.environ.setdefault("OPENAI_API_KEY", values.get("OPENAI_API_KEY", ""))
+    if desc and (values.get("DEEPSEEK_API_KEY") or os.getenv("DEEPSEEK_API_KEY")):
+        os.environ.setdefault("DEEPSEEK_API_KEY", values.get("DEEPSEEK_API_KEY", ""))
         ex = _extractor(1)
         cand = discovery.propose(ex, desc, [], city=city)
         with db.session(args.db) as conn:
@@ -154,9 +154,9 @@ def cmd_run_once(args) -> None:
             sys.exit("APIFY_TOKEN not set.\n  Run `local-calendar init`, or set it in .env.")
         source = ApifySource(token)
         extractor = _extractor(args.rung)
-    elif website_ids and os.getenv("OPENAI_API_KEY"):
+    elif website_ids and os.getenv("DEEPSEEK_API_KEY"):
         # Structured sites still work without a key. Supplying one merely
-        # enables the nano fallback for pages with no supported markup.
+        # enables the model fallback for pages with no supported markup.
         extractor = _extractor(args.rung)
 
     # Measured on real data: posts older than 30 days produced 3% of upcoming
@@ -377,7 +377,7 @@ def main() -> None:
                    help="override the fetch window (default: 30d for new accounts, "
                         "since-last-poll otherwise)")
     r.add_argument("--max-posts", type=int)
-    r.add_argument("--rung", type=int, choices=[1, 2, 3], default=1)
+    r.add_argument("--rung", type=int, choices=sorted(extract.RUNGS), default=1)
     r.add_argument("--yes", action="store_true")
     r.set_defaults(func=cmd_run_once)
 
@@ -390,7 +390,7 @@ def main() -> None:
     d.add_argument("--min-events", type=int, default=1)
     d.add_argument("--top", type=int, default=15)
     d.add_argument("--describe", help="interests, to also get LLM proposals (costs a call)")
-    d.add_argument("--rung", type=int, choices=[1, 2, 3], default=1)
+    d.add_argument("--rung", type=int, choices=sorted(extract.RUNGS), default=1)
     d.set_defaults(func=cmd_discover)
 
     for name in ("approve-account", "reject-account"):

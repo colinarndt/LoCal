@@ -333,7 +333,7 @@ def test_event_calendar_download_contains_only_the_selected_event(tmp_path, monk
 def test_adding_an_instagram_account_requests_keys_only_when_missing(tmp_path, monkeypatch):
     path = tmp_path / "calendar.db"
     monkeypatch.setitem(web.app.config, "DB", str(path))
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.delenv("APIFY_TOKEN", raising=False)
 
     response = web.app.test_client().post("/discover/add", data={"handle": "venue"})
@@ -350,7 +350,7 @@ def test_adding_an_instagram_account_requests_keys_only_when_missing(tmp_path, m
 def test_adding_an_instagram_account_does_not_prompt_when_keys_are_set(tmp_path, monkeypatch):
     path = tmp_path / "calendar.db"
     monkeypatch.setitem(web.app.config, "DB", str(path))
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     monkeypatch.setenv("APIFY_TOKEN", "test-token")
 
     response = web.app.test_client().post("/discover/add", data={"handle": "venue"})

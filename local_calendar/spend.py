@@ -5,11 +5,11 @@ endpoint (the org-level Admin API needs a different class of key, reports across
 the whole organization, and lags) -- so the only way to answer "what has this app
 cost me" is to add it up as it happens.
 
-That turns out to be exact rather than estimated. Every Anthropic response
-carries real token counts, and token counts times the published rate is the same
-arithmetic Anthropic bills. Apify is better still: a finished run reports
+That turns out to be exact rather than estimated. Model responses carry real
+token counts, and token counts times the published rate is the same arithmetic
+the provider bills. Apify is better still: a finished run reports
 `usage_total_usd`, the actual dollars charged. The one number that can drift is
-the rate table below, and only when Anthropic changes prices.
+the rate table below, and only when a provider changes prices.
 
 Costs are recorded on their own connection, outside whatever transaction the
 caller is in. That is deliberate: if extraction fails and the pipeline rolls
@@ -23,7 +23,7 @@ import datetime as dt
 import sqlite3
 
 # USD per million tokens, (input, output), from the published Anthropic pricing.
-# Nothing calls Anthropic since the OpenAI port, but the table stays: `stats`
+# Nothing calls Anthropic now, but the table stays: `stats`
 # and the menu bar re-read historical ledger rows, and a model that priced
 # correctly in March should not start reading as free in August.
 PRICES = {
@@ -41,13 +41,23 @@ CACHE_READ_MULTIPLIER = 0.10
 # multiplier of input, which is why this table carries three numbers where the
 # Anthropic one carries two.
 #
-# The rung 1..3 ladder plus `gpt-5.4-nano`, which is not on the ladder but is
-# the cheaper gate `extract.GATE_MODEL` points at.
+# Historical OpenAI models. Production no longer calls them, but keeping their
+# published rates makes replaying older stored work explicit rather than free.
 OPENAI_PRICES = {
     "gpt-5.4-nano": (0.20, 0.02, 1.25),
     "gpt-5.4-mini": (0.75, 0.075, 4.50),
     "gpt-5.4": (2.50, 0.25, 15.00),
     "gpt-5.5": (5.00, 0.50, 30.00),
+}
+
+# DeepSeek direct-API pricing in USD per million tokens. Its peak windows are
+# 01:00-04:00 and 06:00-10:00 UTC; every other hour is billed at the off-peak
+# rates. The Responses API reports cached tokens in the same shape as OpenAI.
+DEEPSEEK_PRICES = {
+    "deepseek-v4-flash-vision-exp": {
+        "off_peak": (0.22, 0.007, 0.66),
+        "peak": (0.44, 0.014, 1.32),
+    },
 }
 
 _MILLION = 1_000_000
@@ -119,6 +129,21 @@ def price_openai_tokens(model: str, usage) -> float:
             + cached * per_cached + out * per_out) / _MILLION
 
 
+def price_deepseek_tokens(model: str, usage,
+                          at: dt.datetime | None = None) -> float:
+    """Dollars for one DeepSeek call at the applicable peak/off-peak rate."""
+    rates = DEEPSEEK_PRICES.get(model)
+    if rates is None or usage is None:
+        return 0.0
+    at = at or dt.datetime.now(dt.timezone.utc)
+    hour = at.astimezone(dt.timezone.utc).hour
+    band = "peak" if 1 <= hour < 4 or 6 <= hour < 10 else "off_peak"
+    per_in, per_cached, per_out = rates[band]
+    plain_in, cached, write, out = _openai_counts(usage)
+    return (plain_in * per_in + write * per_in
+            + cached * per_cached + out * per_out) / _MILLION
+
+
 def openai_usage_fields(usage) -> dict:
     """The same four counters the Anthropic path stores, so one ledger schema
     covers both providers and old rows stay comparable to new ones."""
@@ -155,6 +180,10 @@ class Meter:
 
     def add_openai(self, model: str, usage) -> None:
         self.add("openai", model, price_openai_tokens(model, usage),
+                 **openai_usage_fields(usage))
+
+    def add_deepseek(self, model: str, usage) -> None:
+        self.add("deepseek", model, price_deepseek_tokens(model, usage),
                  **openai_usage_fields(usage))
 
     def add_apify(self, actor_id: str, run, *, units: float | None = None,

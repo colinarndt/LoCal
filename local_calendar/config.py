@@ -20,8 +20,8 @@ from .paths import CONFIG_PATH, ENV_PATH  # noqa: F401  (re-exported; callers im
 
 # Asked for by `cli init`, reported (present/absent, never the value) by /settings.
 API_KEYS = [
-    ("OPENAI_API_KEY", "OpenAI API key",
-     "https://platform.openai.com/api-keys"),
+    ("DEEPSEEK_API_KEY", "DeepSeek API key",
+     "https://platform.deepseek.com/api_keys"),
     ("APIFY_TOKEN", "Apify API token",
      "https://console.apify.com/settings/integrations"),
 ]

@@ -1,5 +1,6 @@
 """Web settings, including the source-specific automatic refresh defaults."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -60,3 +61,45 @@ def test_settings_rejects_an_out_of_range_refresh_interval(monkeypatch):
     assert response.status_code == 200
     assert b"Instagram refresh must be between 1 and 720 hours." in response.data
     assert saved == []
+
+
+def test_local_settings_can_save_a_deepseek_key(monkeypatch):
+    writes = []
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr(web.config, "write_env",
+                        lambda values, replace=False: writes.append((values, replace)))
+    monkeypatch.setattr(web.config, "exists", lambda: True)
+    client = web.app.test_client()
+
+    page = client.get("/settings")
+    assert b'name="deepseek_api_key"' in page.data
+
+    response = client.post("/settings", data={
+        "action": "save-deepseek-key",
+        "deepseek_api_key": "ds-test-secret",
+    })
+
+    assert response.status_code == 200
+    assert b"DeepSeek API key saved." in response.data
+    assert b"ds-test-secret" not in response.data
+    assert writes == [({"DEEPSEEK_API_KEY": "ds-test-secret"}, True)]
+    assert os.environ["DEEPSEEK_API_KEY"] == "ds-test-secret"
+
+
+def test_remote_settings_cannot_see_or_save_a_key(monkeypatch):
+    writes = []
+    monkeypatch.setattr(web.config, "write_env",
+                        lambda values, replace=False: writes.append((values, replace)))
+    client = web.app.test_client()
+
+    page = client.get("/settings", environ_base={"REMOTE_ADDR": "192.168.1.20"})
+    assert b'name="deepseek_api_key"' not in page.data
+
+    response = client.post(
+        "/settings",
+        data={"action": "save-deepseek-key", "deepseek_api_key": "stolen"},
+        environ_base={"REMOTE_ADDR": "192.168.1.20"},
+    )
+    assert response.status_code == 200
+    assert b"API keys can only be changed from this Mac." in response.data
+    assert writes == []

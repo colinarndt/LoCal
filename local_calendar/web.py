@@ -12,6 +12,7 @@ from __future__ import annotations
 import calendar
 import csv
 import datetime as dt
+import ipaddress
 import io
 import json
 import os
@@ -30,7 +31,7 @@ from . import (config, db, discovery, geo, manual, notifications, paths, runner,
                trips, websites)
 
 # Only so /settings can report whether a key is present. Values are never
-# rendered, logged, or accepted over HTTP -- see the note above that route.
+# rendered or logged. DeepSeek key entry is limited to loopback requests.
 load_dotenv(paths.ENV_LOCAL_PATH)
 load_dotenv(paths.ENV_PATH)
 
@@ -712,21 +713,51 @@ def review_series(candidate_id: int, decision: str):
 
 
 # --- settings -------------------------------------------------------------
-# Non-secret configuration only. API keys are set by `cli init` and never
-# accepted here: this app binds 0.0.0.0 with no auth so a phone on the LAN can
-# reach it, which makes any key field on it a key field for the whole network.
-# Showing whether a key is *present* is fine; showing or accepting one is not.
+# Most settings are non-secret. A DeepSeek key may also be saved here, but only
+# over a loopback connection from this Mac. The app binds 0.0.0.0 with no auth
+# so phones can reach it; LAN clients may see key status but never an entry
+# field, and an attempted remote POST is rejected.
+
+
+def _is_loopback_request() -> bool:
+    try:
+        return ipaddress.ip_address(request.remote_addr or "").is_loopback
+    except ValueError:
+        return False
 
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
     import os
 
     cfg = config.load()
-    error = saved = None
+    error = saved = key_saved = None
     origin_changed = False
+    can_edit_keys = _is_loopback_request()
 
     if request.method == "POST":
         form = request.form
+        if form.get("action") == "save-deepseek-key":
+            value = (form.get("deepseek_api_key") or "").strip()
+            if not can_edit_keys:
+                error = "API keys can only be changed from this Mac."
+            elif not value:
+                error = "Enter a DeepSeek API key."
+            elif len(value) > 512:
+                error = "That DeepSeek API key is too long."
+            else:
+                config.write_env({"DEEPSEEK_API_KEY": value}, replace=True)
+                # dotenv was loaded at process start, so make the new key usable
+                # immediately without exposing it or requiring an app restart.
+                os.environ["DEEPSEEK_API_KEY"] = value
+                key_saved = True
+            return render_template(
+                "settings.html", cfg=cfg, error=error, saved=saved,
+                key_saved=key_saved, configured=config.exists(),
+                can_edit_keys=can_edit_keys,
+                keys=[(name, label, bool(os.getenv(name)), url)
+                      for name, label, url in config.API_KEYS],
+            )
+
         new = {"radius_miles": cfg["radius_miles"], "timezone": cfg["timezone"],
                # Unchecked boxes are simply absent from the form, so presence is
                # the value. Only the Mac app reads it.
@@ -780,6 +811,7 @@ def settings():
 
     return render_template(
         "settings.html", cfg=cfg, error=error, saved=saved,
+        key_saved=key_saved, can_edit_keys=can_edit_keys,
         configured=config.exists(),
         keys=[(name, label, bool(os.getenv(name)), url)
               for name, label, url in config.API_KEYS],
@@ -816,7 +848,7 @@ def _fetch_worker(handles: list[str], website_source_ids: list[int],
             from .sources import ApifySource
 
             source = ApifySource(os.environ["APIFY_TOKEN"])
-        if handles or (website_source_ids and os.getenv("OPENAI_API_KEY")):
+        if handles or (website_source_ids and os.getenv("DEEPSEEK_API_KEY")):
             from .extract import Extractor
 
             extractor = Extractor()

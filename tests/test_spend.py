@@ -59,6 +59,20 @@ def test_missing_usage_object_does_not_raise():
     assert spend.usage_fields(None)["input_tokens"] == 0
 
 
+def test_deepseek_peak_and_off_peak_pricing():
+    usage = types.SimpleNamespace(
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        input_tokens_details=types.SimpleNamespace(cached_tokens=0),
+    )
+    off_peak = dt.datetime(2026, 9, 5, 12, tzinfo=dt.timezone.utc)
+    peak = dt.datetime(2026, 9, 5, 7, tzinfo=dt.timezone.utc)
+    model = "deepseek-v4-flash-vision-exp"
+
+    assert spend.price_deepseek_tokens(model, usage, off_peak) == 0.88
+    assert spend.price_deepseek_tokens(model, usage, peak) == 1.76
+
+
 # --- the meter --------------------------------------------------------------
 
 def test_drain_clears_so_a_second_drain_cannot_double_charge():
@@ -112,6 +126,32 @@ def test_totals_on_a_fresh_install_are_zero_not_null():
     assert t["last_24h"] == 0
     assert t["since"] is None       # drives "since tracking started" in the UI
     assert t["calls"] == 0
+
+
+def test_new_deepseek_spend_does_not_reprice_old_provider_rows():
+    conn = _conn()
+    original_usd = 0.00123456
+    conn.execute(
+        "INSERT INTO spend (occurred_at, provider, detail, usd) VALUES (?,?,?,?)",
+        ("2026-09-04T23:59:59+00:00", "openai", "gpt-5.4-mini", original_usd),
+    )
+    meter = spend.Meter()
+    meter.add_deepseek(
+        "deepseek-v4-flash-vision-exp",
+        types.SimpleNamespace(
+            input_tokens=1_000,
+            output_tokens=100,
+            input_tokens_details=types.SimpleNamespace(cached_tokens=0),
+        ),
+    )
+    spend.drain_into(conn, meter)
+
+    rows = conn.execute("SELECT provider, usd FROM spend ORDER BY id").fetchall()
+    assert rows[0]["provider"] == "openai"
+    assert rows[0]["usd"] == original_usd
+    assert rows[1]["provider"] == "deepseek"
+    assert rows[1]["usd"] > 0
+    assert spend.totals(conn)["all_time"] == original_usd + rows[1]["usd"]
 
 
 def test_drain_into_writes_every_token_counter():

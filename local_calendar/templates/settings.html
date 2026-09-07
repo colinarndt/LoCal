@@ -30,7 +30,8 @@
           padding:16px; }
   label { display:block; font-size:.85rem; color:var(--muted); margin-bottom:4px; }
   .field + .field { margin-top:14px; }
-  input[type=text], input[type=number] { font:inherit; width:100%; padding:8px 10px;
+  input[type=text], input[type=number], input[type=password] {
+    font:inherit; width:100%; padding:8px 10px;
     border-radius:7px; border:1px solid var(--line); background:var(--bg); color:var(--ink); }
   .hint { font-size:.8rem; color:var(--muted); margin-top:4px; }
   button { font:inherit; padding:8px 16px; border-radius:7px; border:1px solid transparent;
@@ -56,6 +57,7 @@
 
 {% if error %}<div class="msg err">{{ error }}</div>{% endif %}
 {% if saved %}<div class="msg ok">Saved.</div>{% endif %}
+{% if key_saved %}<div class="msg ok">DeepSeek API key saved.</div>{% endif %}
 {% if not configured %}
   <div class="msg err">Not set up yet — you're seeing the example city. Run
     <code>local-calendar init</code>, or just fill this in.</div>
@@ -136,11 +138,24 @@
     </li>
   {% endfor %}
   </ul>
-  <p class="hint">Keys are not editable here on purpose. This app binds
-    <code>0.0.0.0</code> with no login so your phone can reach it, which would make
-    a key field on this page a key field for everyone on the network. Set them in
-    the Mac app under <b>API&nbsp;Keys…</b> — a native window nothing on the
-    network can reach — or with <code>local-calendar init</code>.</p>
+  {% if can_edit_keys %}
+  <form method="post" autocomplete="off" style="margin-top:16px">
+    <input type="hidden" name="action" value="save-deepseek-key">
+    <div class="field">
+      <label for="deepseek_api_key">DeepSeek API key</label>
+      <input type="password" id="deepseek_api_key" name="deepseek_api_key"
+             maxlength="512" autocomplete="new-password"
+             placeholder="{{ 'Already set — enter a replacement' if keys[0][2] else 'Paste your DeepSeek API key' }}">
+      <div class="hint">The current key is never displayed. Saving stores it in the
+        same mode-600 <code>.env</code> file used by the Mac app.</div>
+    </div>
+    <div class="field"><button type="submit">Save DeepSeek key</button></div>
+  </form>
+  {% else %}
+  <p class="hint">For safety, API keys can only be entered when this page is opened
+    on the Mac itself at <code>127.0.0.1</code>. Key entry is hidden from phones and
+    other devices because this app has no network login.</p>
+  {% endif %}
 </div>
 
 <footer>Settings live in <code>config.json</code>; keys live in <code>.env</code>.

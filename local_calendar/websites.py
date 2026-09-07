@@ -2002,7 +2002,7 @@ def poll_source(conn: sqlite3.Connection, source_id: int,
                 (source_id, result.content_hash, WEBSITE_PROMPT_VERSION,
                  result.model or "nano", result.model_output, checked))
         if not events and result.outcome != "empty":
-            suffix = ("; AI fallback is unavailable because OPENAI_API_KEY is not set"
+            suffix = ("; AI fallback is unavailable because DEEPSEEK_API_KEY is not set"
                       if extractor is None else "; AI fallback found no verifiable events")
             raise ValueError(
                 "no iCalendar, schema.org Event, or supported event cards found" + suffix)

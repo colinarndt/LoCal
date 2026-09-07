@@ -19,24 +19,31 @@ from . import avatars, discovery, geo, pipeline, render, spend, websites
 
 
 HISTORY_WINDOW = "30 days"
+POLL_OVERLAP = dt.timedelta(hours=6)
 
 
 def _window_for(mark: str | None) -> str:
-    """One account's window, from its own last_polled_at.
+    """One account's Apify cutoff, from its own last successful poll.
 
-    A never-polled account needs history; one polled yesterday needs yesterday.
-    The 2-day overlap absorbs clock skew and a missed scheduled run -- which is
-    what makes a skipped day self-healing rather than a permanent gap.
+    A never-polled account needs history. Otherwise send an absolute timestamp
+    with a small overlap for clock skew and posts arriving near the boundary.
+    Since the cutoff is based on the saved successful mark, a missed or failed
+    run still expands the next request far enough to catch up automatically.
     """
     if mark is None:
         return HISTORY_WINDOW
-    age = (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(mark)).days + 2
-    return f"{max(age, 3)} days"
+    polled_at = dt.datetime.fromisoformat(mark.replace("Z", "+00:00"))
+    if polled_at.tzinfo is None:
+        polled_at = polled_at.replace(tzinfo=dt.timezone.utc)
+    cutoff = polled_at.astimezone(dt.timezone.utc) - POLL_OVERLAP
+    # Apify accepts an ISO timestamp. Second precision also keeps legacy marks
+    # from the same batch (which differed only in microseconds) in one run.
+    return cutoff.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def fetch_windows(conn: sqlite3.Connection, handles: list[str],
                   history_days: int | None = None) -> list[tuple[str, list[str]]]:
-    """Group handles by their own window, widest first.
+    """Group handles by their own cutoff, widest first.
 
     Collapsing a batch to one window (the oldest mark in it) meant a single
     never-polled account dragged all 19 back to 30 days of history, re-fetching
@@ -61,9 +68,12 @@ def fetch_windows(conn: sqlite3.Connection, handles: list[str],
         # A handle with no account row has never been polled by definition.
         groups.setdefault(_window_for(marks.get(h)), []).append(h)
 
-    # Widest window first: new accounts are the ones with nothing on the
-    # calendar yet, so they are what you are waiting to see.
-    return sorted(groups.items(), key=lambda kv: -int(kv[0].split()[0]))
+    # Widest window first: history for new accounts, then absolute timestamps
+    # from oldest to newest. UTC ISO timestamps sort chronologically as strings.
+    return sorted(groups.items(), key=lambda kv: (
+        0 if kv[0] == HISTORY_WINDOW else 1,
+        "" if kv[0] == HISTORY_WINDOW else kv[0],
+    ))
 
 
 def relabel(conn: sqlite3.Connection) -> None:

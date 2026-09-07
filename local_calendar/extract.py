@@ -1,15 +1,9 @@
 """Gate + vision extraction. Ported from the Phase 0 spike, which validated this
 call path on 160 real posts (SPEC section 3 RESULT).
 
-Runs on OpenAI's Responses API. Both stages take the same shape -- a system
-prompt, one user turn, and a strict JSON schema -- so `_respond` owns the
-request and everything else describes what to put in it.
-
-`gpt-5.4-mini` replaced `claude-haiku-4-5` for cost: $0.75/$4.50 per million
-tokens against Haiku's $1.00/$5.00. The gate is a text-only classification and
-runs a rung lower on `gpt-5.4-nano` ($0.20/$1.25), which the replay eval scored
-level with Haiku on 40 real posts. Move it with GATE_MODEL, but re-run that eval
-first, the same way SPEC section 3 qualified rung 1 in the first place.
+DeepSeek exposes an OpenAI-compatible Responses API, so the gate, flyer vision,
+website fallback, and account suggestions all share this request path. The
+model accepts both text and images and supports JSON Schema output.
 """
 
 from __future__ import annotations
@@ -17,6 +11,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import json
+import os
 from pathlib import Path
 
 import openai
@@ -24,21 +19,20 @@ import openai
 from . import prompts, spend
 from .paths import MEDIA_DIR
 
-# SPEC section 3 escalation ladder, re-pointed at OpenAI. Rung 1 is production.
-RUNGS = {1: "gpt-5.4-mini", 2: "gpt-5.4", 3: "gpt-5.5"}
+# Production has one model for every model-backed stage. Keeping the one-entry
+# mapping preserves the replay/import interfaces without implying that an
+# unqualified fallback to another provider is available.
+RUNGS = {1: "deepseek-v4-flash-vision-exp"}
 DEFAULT_RUNG = 1
 
-# Per-stage override. The gate is a text-only binary call over a caption, and
-# `eval_replay --stage gate` put nano at 39/40 against Haiku on 40 real posts --
-# the same single disagreement mini makes, and level with nano's own 39/40
-# self-agreement. It matches the outgoing model as closely as it matches itself,
-# at a bit over a quarter of mini's gate cost, so this is measured rather than assumed.
-GATE_MODEL: str | None = "gpt-5.4-nano"
+# Per-stage overrides remain explicit extension points, but production sends
+# every stage through the model selected by RUNGS.
+GATE_MODEL: str | None = None
 
 # Arbitrary website markup is a text-only extraction task, so it uses the same
 # inexpensive model as the caption gate. This is only a last resort: the
 # website pipeline tries iCalendar, JSON-LD, and known HTML cards first.
-WEBSITE_MODEL: str | None = GATE_MODEL
+WEBSITE_MODEL: str | None = None
 WEBSITE_PROMPT_VERSION = "website-v2"
 
 WEBSITE_SYSTEM = """\
@@ -169,7 +163,10 @@ def _refusal(resp) -> str | None:
 class Extractor:
     def __init__(self, client: openai.OpenAI | None = None, rung: int = DEFAULT_RUNG,
                  media_dir: Path = MEDIA_DIR, meter: spend.Meter | None = None):
-        self.client = client or openai.OpenAI()
+        self.client = client or openai.OpenAI(
+            api_key=os.environ.get("DEEPSEEK_API_KEY"),
+            base_url="https://api.deepseek.com",
+        )
         self.rung = rung
         self.model = RUNGS[rung]
         self.media_dir = media_dir
@@ -197,14 +194,14 @@ class Extractor:
                 input=[{"role": "user", "content": content}],
                 max_output_tokens=max_output_tokens,
                 text={"format": {"type": "json_schema", "name": name,
-                                 "schema": schema, "strict": True}},
+                                 "schema": schema}},
             )
         except Exception as exc:
             # No response means no usage object and nothing billed -- a request
             # rejected before the model ran costs nothing.
             return {"_error": f"{type(exc).__name__}: {exc}"}
 
-        self.meter.add_openai(model, getattr(resp, "usage", None))
+        self.meter.add_deepseek(model, getattr(resp, "usage", None))
 
         if (refusal := _refusal(resp)) is not None:
             return {"_error": "refusal", "_stop_details": refusal}

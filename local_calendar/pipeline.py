@@ -56,8 +56,12 @@ def ingest(conn: sqlite3.Connection, source: IngestionSource, handles: list[str]
         # lock long enough to 500 the web UI.
         conn.commit()
     conn.commit()
+    polled_at = _now()
     for h in handles:
-        conn.execute("UPDATE account SET last_polled_at=? WHERE handle=?", (_now(), h))
+        # One successful provider run gets one shared mark. Besides describing
+        # reality more accurately, this lets the next run keep the batch under
+        # a single run-level `onlyPostsNewerThan` cutoff.
+        conn.execute("UPDATE account SET last_polled_at=? WHERE handle=?", (polled_at, h))
     return new
 
 

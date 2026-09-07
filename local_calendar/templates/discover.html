@@ -72,7 +72,7 @@
 </form>
 {% macro fetch_button(handle, label) %}
   <form method="post" action="/discover/{{ handle }}/fetch" class="fetchf"
-        onsubmit="return confirm('Fetch @{{ handle }} now?\n\nScrapes up to {{ fetch_limit }} recent posts and runs extraction on them — about ${{ '%.2f'|format(fetch_cost) }} of scraping plus model calls.')">
+        onsubmit="return confirm('Fetch @{{ handle }} now?\n\nScrapes up to {{ fetch_limit }} recent posts and runs extraction on them — about ${{ '%.2f'|format(fetch_cost) }} of scraping plus DeepSeek model calls.')">
     <button type="submit" {{ 'disabled' if job['state'] == 'running' }}>{{ label }}</button>
   </form>
 {% endmacro %}
@@ -126,7 +126,7 @@
   {# One button for the whole rotation: the window is per-account and incremental,
      so this is the same work the nightly run-once does, on demand. #}
   <form method="post" action="/discover/fetch-all" class="fetchf"
-        onsubmit="return confirm('Refresh {{ polled|length }} Instagram account{{ '' if polled|length == 1 else 's' }}, {{ website_sources|length }} website{{ '' if website_sources|length == 1 else 's' }}, and {{ performer_sources|length }} performer watch{{ '' if performer_sources|length == 1 else 'es' }}?\n\nWebsite calendars are fetched directly. Instagram may cost up to ${{ '%.2f'|format(fetch_all_cost) }} for scraping, plus model calls on new unmatched posts.')">
+        onsubmit="return confirm('Refresh {{ polled|length }} Instagram account{{ '' if polled|length == 1 else 's' }}, {{ website_sources|length }} website{{ '' if website_sources|length == 1 else 's' }}, and {{ performer_sources|length }} performer watch{{ '' if performer_sources|length == 1 else 'es' }}?\n\nWebsite calendars are fetched directly. Instagram may cost up to ${{ '%.2f'|format(fetch_all_cost) }} for scraping, plus DeepSeek model calls on new unmatched posts.')">
     <button class="ok" type="submit" {{ 'disabled' if job['state'] == 'running' }}
             >&#8635; check all sources</button></form>
 {% endif %}
