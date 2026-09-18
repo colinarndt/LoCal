@@ -105,13 +105,18 @@
   .addev textarea, .event-modal textarea { width:100%; resize:vertical; }
   .addev .hint, .event-modal .hint { font-size:.78rem; color:var(--muted); }
   /* On a card the edit form is a disclosure, not a panel: closed it should read
-     as one more small action beside confirm/hide/flag. */
+     as one more small action beside confirm/hide. */
   .addev.inline { display:inline-block; margin:6px 0 0; padding:0; border:0;
                   background:none; font-size:.85rem; }
   .addev.inline > summary { padding:5px 12px; border:1px solid var(--line);
                             border-radius:7px; color:var(--ink); display:inline-block; }
   .addev.inline[open] { display:block; }
   .addev.inline[open] > summary { margin-bottom:6px; }
+  /* An open event editor expands into a full-width row. */
+  .actions .event-edit { margin-top:0; }
+  .actions .event-edit > form { display:block; }
+  .actions .event-edit[open] { flex-basis:100%; }
+  .source-title { margin:2px 0 7px; font-size:.78rem; color:var(--muted); }
   /* Trip planning tools use native dialogs: Escape closes them, focus stays
      inside while open, and neither one occupies calendar space while closed. */
   .tool-modal { width:min(760px,calc(100vw - 28px)); max-height:calc(100vh - 28px);
@@ -203,6 +208,7 @@
 
   .actions button { font-size:.8rem; padding:4px 10px; }
   .actions form { display:inline; }
+  .actions .flag-form { display:none; }
   .hide-choice { display:inline; position:relative; }
   .hide-choice summary { list-style:none; cursor:pointer; font-size:.8rem; padding:4px 10px;
                          border:1px solid var(--line); border-radius:7px;
@@ -617,7 +623,42 @@
           <form method="post" action="/event/{{ e['id'] }}/hide">
             <button type="submit">{{ 'hide series' if e['occurrence_of'] else 'hide' }}</button></form>
         {% endif %}
-        <form method="post" action="/event/{{ e['id'] }}/flag">
+        {% if e['is_manual'] %}
+          {# Yours to change: the edit form is the add form, prefilled. #}
+          <details class="addev inline event-edit">
+          <summary>edit</summary>
+          <form method="post" action="/events/manual/{{ e['id'] }}/edit">
+            <input type="hidden" name="back" value="{{ query_with(args) }}">
+            {{ manual_fields(e) }}
+            <div class="row"><button class="primary" type="submit">save</button></div>
+          </form>
+          </details>
+        {% else %}
+          <details class="addev inline event-edit">
+          <summary>edit</summary>
+          <form method="post" action="/events/{{ e['id'] }}/edit">
+            <input type="hidden" name="back" value="{{ query_with(args) }}">
+            <div class="row">
+              <input class="grow" name="title" maxlength="200"
+                     aria-label="title shown in the calendar"
+                     value="{{ e['title'] or '' }}" placeholder="title shown in the calendar">
+            </div>
+            {% if e['title_override'] %}
+              <p class="source-title">From the source: {{ e['source_title'] or '(untitled)' }}</p>
+            {% endif %}
+            <div class="row">
+              <textarea name="notes" rows="2" maxlength="4000"
+                        placeholder="notes for this event">{{ e['notes'] or '' }}</textarea>
+            </div>
+            <div class="row">
+              <span class="hint">Clear the title to use the source title again.</span>
+              <button class="primary" type="submit">save</button>
+            </div>
+          </form>
+          </details>
+        {% endif %}
+        {# Keep flagging available in the implementation, but hide its control for now. #}
+        <form class="flag-form" hidden method="post" action="/event/{{ e['id'] }}/flag">
           <button type="submit">{{ 'clear flag' if e['needs_review'] else 'flag' }}</button></form>
         {% if e['is_manual'] %}
           <form method="post" action="/events/manual/{{ e['id'] }}/delete" class="drop-mine">
@@ -625,17 +666,6 @@
             <button class="danger" type="submit">delete</button></form>
         {% endif %}
       </div>
-      {% if e['is_manual'] %}
-        {# Yours to change: the edit form is the add form, prefilled. #}
-        <details class="addev inline">
-          <summary>edit</summary>
-          <form method="post" action="/events/manual/{{ e['id'] }}/edit">
-            <input type="hidden" name="back" value="{{ query_with(args) }}">
-            {{ manual_fields(e) }}
-            <div class="row"><button class="primary" type="submit">save</button></div>
-          </form>
-        </details>
-      {% endif %}
       </div>
       {% if e['thumb'] %}
         <img class="thumb" src="/media/{{ e['thumb'] }}" alt="flyer" loading="lazy"

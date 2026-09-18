@@ -122,7 +122,8 @@ def _install_main_menu(app, delegate) -> None:
     Text fields and WKWebView still know how to perform ``copy:``/``paste:``,
     which is why their context menus work, but Command-key equivalents are only
     dispatched when matching items exist in the application's main menu.
-    Targets stay nil so AppKit sends each action to the focused text control.
+    Editing targets stay nil so AppKit sends each action to the focused text
+    control. App-specific actions target the delegate directly.
     """
     main = NSMenu.alloc().initWithTitle_("Main Menu")
 
@@ -157,6 +158,11 @@ def _install_main_menu(app, delegate) -> None:
     ):
         edit.addItem_(NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             title, action, key))
+    edit.addItem_(NSMenuItem.separatorItem())
+    refresh = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+        "Refresh", "refreshCalendar:", "r")
+    refresh.setTarget_(delegate)
+    edit.addItem_(refresh)
 
     app.setMainMenu_(main)
 
@@ -362,6 +368,11 @@ class AppDelegate(NSObject):
             self.webview.reload_(None)
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         self.window.makeKeyAndOrderFront_(None)
+
+    def refreshCalendar_(self, sender):
+        """Reload the embedded calendar, matching Safari's Command-R shortcut."""
+        if self.webview is not None:
+            self.webview.reload_(None)
 
     @objc.python_method
     def _build_window(self):

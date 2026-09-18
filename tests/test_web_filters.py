@@ -63,8 +63,10 @@ def test_search_filter_covers_title_and_all_attached_captions():
     where, params = _filters(MultiDict([("when", "all"), ("q", "  Glass  ")]))
 
     assert "e.title LIKE" in where
+    assert "e.title_override" in where
+    assert "e.notes" in where
     assert "event_source ses" in where
-    assert params == ["%Glass%", "%Glass%", "%Glass%"]
+    assert params == ["%Glass%"] * 5
 
 
 def test_search_box_finds_an_event_by_attached_instagram_caption(tmp_path, monkeypatch):

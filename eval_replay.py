@@ -128,7 +128,8 @@ def main() -> int:
     # Resolved before building a client: the SDK raises without a key,
     # so constructing early would turn the cost estimate into a crash for
     # anyone who has not set one up yet.
-    model = args.model or extract.RUNGS[args.rung]
+    model = (args.model or os.getenv(extract.MODEL_ENV_VAR, "").strip()
+             or extract.RUNGS[args.rung])
     if model not in spend.DEEPSEEK_PRICES:
         print(f"!! {model} is not in spend.DEEPSEEK_PRICES -- it would log as $0.00")
         return 1

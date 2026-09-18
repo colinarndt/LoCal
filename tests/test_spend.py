@@ -59,7 +59,92 @@ def test_missing_usage_object_does_not_raise():
     assert spend.usage_fields(None)["input_tokens"] == 0
 
 
-def test_deepseek_peak_and_off_peak_pricing():
+def _deepseek_usage(*, total_input=1_000_000, cached=0, output=1_000_000):
+    return types.SimpleNamespace(
+        input_tokens=total_input,
+        output_tokens=output,
+        input_tokens_details=types.SimpleNamespace(cached_tokens=cached),
+    )
+
+
+def test_deepseek_flash_cutover_is_exact_and_preserves_old_rates():
+    usage = _deepseek_usage()
+    just_before = dt.datetime(2026, 9, 10, 3, 59, 59,
+                              tzinfo=dt.timezone.utc)
+    effective_at = dt.datetime(2026, 9, 10, 4, 0,
+                               tzinfo=dt.timezone.utc)
+
+    assert spend.price_deepseek_tokens(
+        "deepseek-v4-flash-vision-exp", usage, just_before) == 1.76
+    assert spend.price_deepseek_tokens(
+        "deepseek-v4-flash-vision-exp", usage, effective_at) == 0.75
+
+
+def test_deepseek_canonical_legacy_and_checkpoint_flash_names_are_priced():
+    usage = _deepseek_usage()
+    off_peak = dt.datetime(2026, 9, 10, 12, tzinfo=dt.timezone.utc)
+
+    for model in (
+        "deepseek-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp",
+        "deepseek-v4-flash-0731",
+    ):
+        assert spend.price_deepseek_tokens(model, usage, off_peak) == 0.75
+
+
+def test_deepseek_flash_cache_hit_rate_and_peak_multiplier():
+    usage = _deepseek_usage(total_input=2_000_000, cached=1_000_000)
+    off_peak = dt.datetime(2026, 9, 10, 12, tzinfo=dt.timezone.utc)
+    peak = dt.datetime(2026, 9, 10, 7, tzinfo=dt.timezone.utc)
+
+    # 1M cache misses + 1M cache hits + 1M output tokens.
+    assert spend.price_deepseek_tokens("deepseek-flash", usage, off_peak) == 0.753
+    assert spend.price_deepseek_tokens("deepseek-flash", usage, peak) == 1.506
+
+
+def test_deepseek_weekday_peak_windows_and_weekend_off_peak():
+    usage = _deepseek_usage()
+    weekday = dt.datetime(2026, 9, 15, tzinfo=dt.timezone.utc)  # Tuesday
+
+    for hour in (1, 2, 3, 6, 7, 8, 9):
+        assert spend.price_deepseek_tokens(
+            "deepseek-flash", usage, weekday.replace(hour=hour)) == 1.50
+    for hour in (0, 4, 5, 10, 12, 23):
+        assert spend.price_deepseek_tokens(
+            "deepseek-flash", usage, weekday.replace(hour=hour)) == 0.75
+
+    weekend_peak_hour = dt.datetime(2026, 9, 12, 7,
+                                    tzinfo=dt.timezone.utc)
+    assert spend.price_deepseek_tokens(
+        "deepseek-flash", usage, weekend_peak_hour) == 0.75
+
+
+def test_deepseek_pro_routes_to_flash_prices_at_its_cutover():
+    usage = _deepseek_usage()
+    off_peak_before = dt.datetime(2026, 9, 11, 12,
+                                  tzinfo=dt.timezone.utc)
+    just_before = dt.datetime(2026, 9, 14, 3, 59, 59,
+                              tzinfo=dt.timezone.utc)
+    effective_at = dt.datetime(2026, 9, 14, 4,
+                               tzinfo=dt.timezone.utc)
+
+    assert spend.price_deepseek_tokens(
+        "deepseek-v4-pro", usage, off_peak_before) == 2.64
+    assert spend.price_deepseek_tokens(
+        "deepseek-v4-pro-0813", usage, just_before) == 5.28
+    assert spend.price_deepseek_tokens(
+        "deepseek-v4-pro", usage, effective_at) == 0.75
+
+
+def test_unknown_deepseek_model_prices_at_zero():
+    assert spend.price_deepseek_tokens(
+        "deepseek-v5-rumor", _deepseek_usage(),
+        dt.datetime(2026, 9, 15, tzinfo=dt.timezone.utc),
+    ) == 0.0
+
+
+def test_deepseek_old_peak_and_off_peak_pricing_before_update():
     usage = types.SimpleNamespace(
         input_tokens=1_000_000,
         output_tokens=1_000_000,
@@ -135,23 +220,29 @@ def test_new_deepseek_spend_does_not_reprice_old_provider_rows():
     original_usd = 0.00123456
     conn.execute(
         "INSERT INTO spend (occurred_at, provider, detail, usd) VALUES (?,?,?,?)",
-        ("2026-09-04T23:59:59+00:00", "openai", "gpt-5.4-mini", original_usd),
+        ("2026-09-04T23:59:59+00:00", "deepseek",
+         "deepseek-v4-flash-vision-exp", original_usd),
     )
     meter = spend.Meter()
     meter.add_deepseek(
-        "deepseek-v4-flash-vision-exp",
+        "deepseek-flash",
         types.SimpleNamespace(
             input_tokens=1_000,
             output_tokens=100,
             input_tokens_details=types.SimpleNamespace(cached_tokens=0),
         ),
+        at=dt.datetime(2026, 9, 10, 12, tzinfo=dt.timezone.utc),
     )
     spend.drain_into(conn, meter)
 
-    rows = conn.execute("SELECT provider, usd FROM spend ORDER BY id").fetchall()
-    assert rows[0]["provider"] == "openai"
+    rows = conn.execute(
+        "SELECT provider, detail, usd FROM spend ORDER BY id"
+    ).fetchall()
+    assert rows[0]["provider"] == "deepseek"
+    assert rows[0]["detail"] == "deepseek-v4-flash-vision-exp"
     assert rows[0]["usd"] == original_usd
     assert rows[1]["provider"] == "deepseek"
+    assert rows[1]["detail"] == "deepseek-flash"
     assert rows[1]["usd"] > 0
     assert spend.totals(conn)["all_time"] == original_usd + rows[1]["usd"]
 

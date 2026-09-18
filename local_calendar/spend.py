@@ -50,15 +50,55 @@ OPENAI_PRICES = {
     "gpt-5.5": (5.00, 0.50, 30.00),
 }
 
-# DeepSeek direct-API pricing in USD per million tokens. Its peak windows are
-# 01:00-04:00 and 06:00-10:00 UTC, Monday through Friday; every other time is
-# billed at the off-peak rates. The Responses API reports cached tokens in the
-# same shape as OpenAI.
+# DeepSeek direct-API pricing in USD per million tokens, ordered as
+# (uncached_input, cached_input, output). Peak windows are 01:00-04:00 and
+# 06:00-10:00 UTC, Monday through Friday. The Responses API reports cached
+# tokens in the same shape as OpenAI.
+_OLD_FLASH_RATES = {
+    "off_peak": (0.22, 0.007, 0.66),
+    "peak": (0.44, 0.014, 1.32),
+}
+_FLASH_RATES = {
+    "off_peak": (0.15, 0.003, 0.60),
+    "peak": (0.30, 0.006, 1.20),
+}
+_PRO_RATES = {
+    "off_peak": (0.66, 0.022, 1.98),
+    "peak": (1.32, 0.044, 3.96),
+}
+
+_FLASH_PRICE_CHANGE_AT = dt.datetime(2026, 9, 10, 4, tzinfo=dt.timezone.utc)
+_PRO_ROUTES_TO_FLASH_AT = dt.datetime(2026, 9, 14, 4, tzinfo=dt.timezone.utc)
+_EARLIEST = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+
+_FLASH_MODELS = (
+    "deepseek-flash",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-vision-exp",
+    "deepseek-v4-flash-0731",
+)
+_PRO_MODELS = (
+    "deepseek-v4-pro",
+    "deepseek-v4-pro-0813",
+)
+
+# The public table remains a model-to-current-rates lookup for callers that
+# only need to validate a model name. Timestamped schedules below handle the
+# two transitions without changing that interface.
 DEEPSEEK_PRICES = {
-    "deepseek-v4-flash-vision-exp": {
-        "off_peak": (0.22, 0.007, 0.66),
-        "peak": (0.44, 0.014, 1.32),
-    },
+    **{model: _FLASH_RATES for model in _FLASH_MODELS},
+    **{model: _PRO_RATES for model in _PRO_MODELS},
+}
+
+# Schedules retain legacy request aliases and dated checkpoint names so old
+# usage can still be interpreted. Stored ledger dollars are never recalculated.
+_DEEPSEEK_PRICE_SCHEDULES = {
+    **{model: ((_EARLIEST, _OLD_FLASH_RATES),
+               (_FLASH_PRICE_CHANGE_AT, _FLASH_RATES))
+       for model in _FLASH_MODELS},
+    **{model: ((_EARLIEST, _PRO_RATES),
+               (_PRO_ROUTES_TO_FLASH_AT, _FLASH_RATES))
+       for model in _PRO_MODELS},
 }
 
 _MILLION = 1_000_000
@@ -133,11 +173,20 @@ def price_openai_tokens(model: str, usage) -> float:
 def price_deepseek_tokens(model: str, usage,
                           at: dt.datetime | None = None) -> float:
     """Dollars for one DeepSeek call at the applicable peak/off-peak rate."""
-    rates = DEEPSEEK_PRICES.get(model)
-    if rates is None or usage is None:
+    if usage is None:
         return 0.0
     at = at or dt.datetime.now(dt.timezone.utc)
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=dt.timezone.utc)
     at_utc = at.astimezone(dt.timezone.utc)
+    schedule = _DEEPSEEK_PRICE_SCHEDULES.get(model)
+    if schedule is None:
+        return 0.0
+    rates = schedule[0][1]
+    for effective_at, scheduled_rates in schedule[1:]:
+        if at_utc < effective_at:
+            break
+        rates = scheduled_rates
     hour = at_utc.hour
     is_peak_hour = 1 <= hour < 4 or 6 <= hour < 10
     band = "peak" if at_utc.weekday() < 5 and is_peak_hour else "off_peak"
@@ -172,9 +221,9 @@ class Meter:
         self.events: list[dict] = []
 
     def add(self, provider: str, detail: str, usd: float, *, units: float | None = None,
-            estimated: bool = False, **tokens) -> None:
+            estimated: bool = False, occurred_at: str | None = None, **tokens) -> None:
         self.events.append({
-            "occurred_at": _now(), "provider": provider, "detail": detail,
+            "occurred_at": occurred_at or _now(), "provider": provider, "detail": detail,
             "usd": usd, "units": units, "estimated": int(estimated), **tokens,
         })
 
@@ -185,8 +234,14 @@ class Meter:
         self.add("openai", model, price_openai_tokens(model, usage),
                  **openai_usage_fields(usage))
 
-    def add_deepseek(self, model: str, usage) -> None:
-        self.add("deepseek", model, price_deepseek_tokens(model, usage),
+    def add_deepseek(self, model: str, usage,
+                     at: dt.datetime | None = None) -> None:
+        at = at or dt.datetime.now(dt.timezone.utc)
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=dt.timezone.utc)
+        at_utc = at.astimezone(dt.timezone.utc)
+        self.add("deepseek", model, price_deepseek_tokens(model, usage, at_utc),
+                 occurred_at=at_utc.isoformat(),
                  **openai_usage_fields(usage))
 
     def add_apify(self, actor_id: str, run, *, units: float | None = None,

@@ -21,18 +21,13 @@ from .paths import MEDIA_DIR
 
 # Production has one model for every model-backed stage. Keeping the one-entry
 # mapping preserves the replay/import interfaces without implying that an
-# unqualified fallback to another provider is available.
-RUNGS = {1: "deepseek-v4-flash-vision-exp"}
+# unqualified fallback to another provider is available. DEEPSEEK_MODEL is a
+# process-wide test override; production sends the canonical name directly.
+DEFAULT_MODEL = "deepseek-flash"
+MODEL_ENV_VAR = "DEEPSEEK_MODEL"
+RUNGS = {1: DEFAULT_MODEL}
 DEFAULT_RUNG = 1
 
-# Per-stage overrides remain explicit extension points, but production sends
-# every stage through the model selected by RUNGS.
-GATE_MODEL: str | None = None
-
-# Arbitrary website markup is a text-only extraction task, so it uses the same
-# inexpensive model as the caption gate. This is only a last resort: the
-# website pipeline tries iCalendar, JSON-LD, and known HTML cards first.
-WEBSITE_MODEL: str | None = None
 # v3: cap broad venue listings and give their JSON enough room. This also
 # invalidates old cached incomplete responses created before the output fix.
 WEBSITE_PROMPT_VERSION = "website-v3"
@@ -175,7 +170,7 @@ class Extractor:
             base_url="https://api.deepseek.com",
         )
         self.rung = rung
-        self.model = RUNGS[rung]
+        self.model = os.environ.get(MODEL_ENV_VAR, "").strip() or RUNGS[rung]
         self.media_dir = media_dir
         # Cost accrues here and is drained by the pipeline, which is the layer
         # that holds a database connection. `discovery.propose` borrows this
@@ -183,10 +178,6 @@ class Extractor:
         self.meter = meter if meter is not None else spend.Meter()
 
     def model_for(self, stage: str) -> str:
-        if stage == "gate" and GATE_MODEL:
-            return GATE_MODEL
-        if stage == "website" and WEBSITE_MODEL:
-            return WEBSITE_MODEL
         return self.model
 
     def _respond(self, model: str, system: str, content: list[dict],
@@ -208,7 +199,10 @@ class Extractor:
             # rejected before the model ran costs nothing.
             return {"_error": f"{type(exc).__name__}: {exc}"}
 
-        self.meter.add_deepseek(model, getattr(resp, "usage", None))
+        # DeepSeek can canonicalize a requested legacy alias in the response.
+        # Meter the model it says actually served the call when that is present.
+        billed_model = getattr(resp, "model", None) or model
+        self.meter.add_deepseek(billed_model, getattr(resp, "usage", None))
 
         if (refusal := _refusal(resp)) is not None:
             return {"_error": "refusal", "_stop_details": refusal}
@@ -243,9 +237,8 @@ class Extractor:
 
     def website(self, page_text: str, url: str) -> dict:
         """Extract events from sanitized visible page text, without images."""
-        model = WEBSITE_MODEL or self.model
         return self._respond(
-            model,
+            self.model,
             WEBSITE_SYSTEM,
             [{"type": "input_text", "text": f"Page URL: {url}\n\n{page_text}"}],
             WEBSITE_SCHEMA,

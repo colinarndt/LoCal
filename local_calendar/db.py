@@ -289,6 +289,9 @@ MIGRATIONS = [
     # database that cannot be re-derived from a source if it is lost.
     "ALTER TABLE event ADD COLUMN is_manual INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE event ADD COLUMN notes TEXT",
+    # A source refresh is free to improve the extracted title, but it must not
+    # overwrite a correction the user made to the title shown in the calendar.
+    "ALTER TABLE event ADD COLUMN title_override TEXT",
     # Manual events carry their trip directly; every other row infers scope from
     # the source that produced it, and a manual event has no source.
     "ALTER TABLE event ADD COLUMN trip_id INTEGER REFERENCES trip(id)",

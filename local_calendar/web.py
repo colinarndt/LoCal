@@ -27,8 +27,8 @@ from flask import (Flask, Response, abort, redirect, render_template, request,
                    send_from_directory, url_for)
 from markupsafe import Markup, escape
 
-from . import (config, db, discovery, geo, manual, notifications, paths, runner, spend,
-               trips, websites)
+from . import (config, db, discovery, editorial, geo, manual, notifications, paths,
+               runner, spend, trips, websites)
 
 # Only so /settings can report whether a key is present. Values are never
 # rendered or logged. DeepSeek key entry is limited to loopback requests.
@@ -413,12 +413,14 @@ def _filters(args, trip=None) -> tuple[str, list]:
         pattern = f"%{escaped}%"
         where.append(
             "(e.title LIKE ? ESCAPE '\\' COLLATE NOCASE OR "
+            "COALESCE(e.title_override,'') LIKE ? ESCAPE '\\' COLLATE NOCASE OR "
+            "COALESCE(e.notes,'') LIKE ? ESCAPE '\\' COLLATE NOCASE OR "
             "COALESCE(p.caption,'') LIKE ? ESCAPE '\\' COLLATE NOCASE OR "
             "EXISTS (SELECT 1 FROM event_source ses "
             "JOIN source_post sp ON sp.post_id=ses.source_item_id "
             "WHERE ses.event_id=e.id AND "
             "COALESCE(sp.caption,'') LIKE ? ESCAPE '\\' COLLATE NOCASE))")
-        params += [pattern, pattern, pattern]
+        params += [pattern, pattern, pattern, pattern, pattern]
     if args.get("confirmed") == "1":
         where.append("e.is_confirmed = 1")
     if args.get("review") == "1":
@@ -432,7 +434,8 @@ def _filters(args, trip=None) -> tuple[str, list]:
 
 
 _SELECT_COLUMNS = """
-SELECT e.id, e.title, e.starts_at, e.ends_at, e.start_time_known, e.venue_name, e.venue_key,
+SELECT e.id, COALESCE(e.title_override,e.title) AS title, e.title AS source_title,
+       e.title_override, e.starts_at, e.ends_at, e.start_time_known, e.venue_name, e.venue_key,
        e.category, e.price_text, e.needs_review, e.review_reason, e.is_confirmed,
        e.location_city, e.location_region, e.location_lat, e.location_lon,
        e.ticket_url, e.ticket_status, e.notes, e.is_manual,
@@ -520,7 +523,7 @@ def _rows(conn, args, trip=None):
     where, params = _filters(args, trip)
     select, select_params = _base_select(trip)
     rows = conn.execute(
-        f"{select} WHERE {where} ORDER BY e.starts_at LIMIT 500",
+        f"{select} WHERE {where} ORDER BY e.starts_at",
         select_params + params).fetchall()
 
     if trip is not None:
@@ -1179,6 +1182,15 @@ def delete_manual_event(event_id: int):
         if not manual.delete(conn, event_id):
             return ("no such event", 404)
     return redirect(_back_to(request.form))
+
+
+@app.post("/events/<int:event_id>/edit")
+def edit_found_event(event_id: int):
+    """Save user-facing details without changing the extracted source data."""
+    with db.session(app.config["DB"]) as conn:
+        if not editorial.update_event(conn, event_id, request.form):
+            return ("no such event", 404)
+    return redirect(f"{_back_to(request.form)}#event-{event_id}")
 
 
 # --- trips ----------------------------------------------------------------

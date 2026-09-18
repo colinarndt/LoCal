@@ -25,8 +25,10 @@ class FakeDeepSeek:
     """
 
     def __init__(self, status="completed", text='{"is_event_candidate": false}',
-                 refusal=None, cached=0):
-        self.status, self.text, self.refusal, self.cached = status, text, refusal, cached
+                 refusal=None, cached=0, returned_model=None):
+        self.status, self.text = status, text
+        self.refusal, self.cached = refusal, cached
+        self.returned_model = returned_model
         self.calls = 0
         self.requests = []
         self.responses = types.SimpleNamespace(create=self._create)
@@ -37,6 +39,7 @@ class FakeDeepSeek:
         parts = ([types.SimpleNamespace(type="refusal", refusal=self.refusal)]
                  if self.refusal else [types.SimpleNamespace(type="output_text")])
         return types.SimpleNamespace(
+            model=self.returned_model or kw["model"],
             status=self.status,
             incomplete_details=None,
             output=[types.SimpleNamespace(content=parts)],
@@ -55,21 +58,46 @@ def _post():
 
 # --- the extractor ----------------------------------------------------------
 
-def test_each_stage_bills_the_model_it_actually_used():
+def test_each_stage_uses_and_bills_the_one_canonical_model(monkeypatch):
     """Every model-backed stage uses and meters the configured DeepSeek model."""
+    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
     client = FakeDeepSeek()
     ex = Extractor(client=client, rung=1)
     ex.gate(_post())
     ex.extract(_post())
     gate_event, extract_event = ex.meter.drain()
-    assert gate_event["detail"] == "deepseek-v4-flash-vision-exp"
-    assert extract_event["detail"] == "deepseek-v4-flash-vision-exp"
+    assert gate_event["detail"] == "deepseek-flash"
+    assert extract_event["detail"] == "deepseek-flash"
     assert gate_event["provider"] == "deepseek"
     assert extract_event["provider"] == "deepseek"
-    assert {request["model"] for request in client.requests} == {
-        "deepseek-v4-flash-vision-exp"
-    }
-    assert ex.model_for("website") == "deepseek-v4-flash-vision-exp"
+    assert {request["model"] for request in client.requests} == {"deepseek-flash"}
+    assert ex.model_for("website") == "deepseek-flash"
+
+
+def test_one_environment_override_controls_every_stage(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
+    client = FakeDeepSeek()
+    ex = Extractor(client=client)
+
+    ex.gate(_post())
+    ex.extract(_post())
+    ex.website("one event", "https://venue.example/events")
+
+    assert ex.model == "deepseek-v4-pro"
+    assert {request["model"] for request in client.requests} == {"deepseek-v4-pro"}
+
+
+def test_response_canonical_model_name_drives_metering(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-flash-vision-exp")
+    client = FakeDeepSeek(returned_model="deepseek-flash")
+    ex = Extractor(client=client)
+
+    ex.extract(_post())
+
+    (event,) = ex.meter.drain()
+    assert client.requests[0]["model"] == "deepseek-v4-flash-vision-exp"
+    assert event["detail"] == "deepseek-flash"
+    assert event["usd"] > 0
 
 
 def test_a_cached_token_is_billed_once_at_the_cached_rate():
