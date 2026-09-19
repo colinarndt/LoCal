@@ -42,6 +42,7 @@ local-calendar-web = "local_calendar.web:main"
 social-calendar = "local_calendar.cli:main"
 social-calendar-web = "local_calendar.web:main"
 local-calendar-hosted-refresh = "local_calendar.hosted:main"
+local-calendar-hosted-import-owner = "local_calendar.hosted_import:main"
 
 [tool.setuptools.packages.find]
 include = ["local_calendar*"]

@@ -13,10 +13,10 @@ Implemented on the branch:
 - on-demand 320px WebP card thumbnails while preserving originals for the
   event lightbox.
 
-Still required before deployment: owner-data migration, unattended per-tenant
-backups, and the actual Cloudflare/GCP setup. The unattended per-tenant refresh
-command and production systemd templates are now implemented but have not been
-exercised on a VM.
+Still required before deployment: encrypted backups and the actual
+Cloudflare/GCP setup. The owner importer, unattended per-tenant refresh command,
+and production systemd templates are implemented but have not been exercised
+on a VM.
 
 The hosted edition is one service for multiple private users. It is not a
 shared calendar and does not ask each user to deploy an instance. Cloudflare
@@ -117,3 +117,9 @@ runs only source types whose saved intervals are due, and exits nonzero if a
 tenant refresh fails. It never initiates a first paid Instagram poll: that
 remains an explicit action in the UI. A ten-minute systemd timer is provided in
 `deploy/systemd` together with a hardened web service template.
+
+After the owner signs in once, `local-calendar-hosted-import-owner SOURCE --yes`
+imports a consistent SQLite snapshot plus media, avatars, and settings into the
+empty owner tenant. It refuses an owner database containing user data, refuses
+media collisions, requires the web service to be stopped, never changes the
+source directory, and deliberately does not copy provider secrets.
