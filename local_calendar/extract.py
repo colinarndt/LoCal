@@ -16,8 +16,7 @@ from pathlib import Path
 
 import openai
 
-from . import prompts, spend
-from .paths import MEDIA_DIR
+from . import config, prompts, spend, tenancy
 
 # Production has one model for every model-backed stage. Keeping the one-entry
 # mapping preserves the replay/import interfaces without implying that an
@@ -164,14 +163,15 @@ def _refusal(resp) -> str | None:
 
 class Extractor:
     def __init__(self, client: openai.OpenAI | None = None, rung: int = DEFAULT_RUNG,
-                 media_dir: Path = MEDIA_DIR, meter: spend.Meter | None = None):
+                 media_dir: Path | None = None, meter: spend.Meter | None = None,
+                 api_key: str | None = None):
         self.client = client or openai.OpenAI(
-            api_key=os.environ.get("DEEPSEEK_API_KEY"),
+            api_key=api_key or config.secret("DEEPSEEK_API_KEY"),
             base_url="https://api.deepseek.com",
         )
         self.rung = rung
         self.model = os.environ.get(MODEL_ENV_VAR, "").strip() or RUNGS[rung]
-        self.media_dir = media_dir
+        self.media_dir = media_dir or tenancy.current().media_dir
         # Cost accrues here and is drained by the pipeline, which is the layer
         # that holds a database connection. `discovery.propose` borrows this
         # extractor's client, so it reports into the same meter.

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Protocol
 
 from . import spend
-from .paths import MEDIA_DIR
+from . import tenancy
 
 MAX_IMAGES = 3
 ACTOR_ID = "apify/instagram-scraper"
@@ -49,8 +49,9 @@ def read_accounts(path: Path) -> list[str]:
     return out
 
 
-def download_images(post: RawPost, media_dir: Path = MEDIA_DIR) -> None:
+def download_images(post: RawPost, media_dir: Path | None = None) -> None:
     """Store images locally. CDN URLs expire, so hotlinking breaks re-extraction."""
+    media_dir = media_dir or tenancy.current().media_dir
     media_dir.mkdir(parents=True, exist_ok=True)
     for i, url in enumerate(post.image_urls[:MAX_IMAGES]):
         dest = media_dir / f"{post.post_id}_{i}.jpg"

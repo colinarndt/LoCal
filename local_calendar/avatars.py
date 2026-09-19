@@ -10,8 +10,7 @@ from __future__ import annotations
 import sys
 import urllib.request
 
-from . import spend
-from .paths import AVATAR_DIR
+from . import spend, tenancy
 
 ACTOR_ID = "apify/instagram-profile-scraper"
 
@@ -50,8 +49,9 @@ def download(handle: str, url: str) -> str | None:
     """Store locally -- Instagram CDN URLs expire."""
     if not url:
         return None
-    AVATAR_DIR.mkdir(parents=True, exist_ok=True)
-    dest = AVATAR_DIR / f"{handle}.jpg"
+    avatar_dir = tenancy.current().avatar_dir
+    avatar_dir.mkdir(parents=True, exist_ok=True)
+    dest = avatar_dir / f"{handle}.jpg"
     if dest.exists():
         return dest.name
     try:

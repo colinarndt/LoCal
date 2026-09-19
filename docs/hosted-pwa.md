@@ -35,6 +35,8 @@ Hosted mode requires all three settings:
 LOCAL_CALENDAR_AUTH_MODE=cloudflare
 CLOUDFLARE_ACCESS_TEAM_DOMAIN=https://your-team.cloudflareaccess.com
 CLOUDFLARE_ACCESS_AUD=the-application-audience-tag
+LOCAL_CALENDAR_HOSTED_ROOT=/srv/local-calendar
+LOCAL_CALENDAR_OWNER_EMAIL=you@example.com
 ```
 
 Private routes fail closed when hosted configuration or a valid assertion is
