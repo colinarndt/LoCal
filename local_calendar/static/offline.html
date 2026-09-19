@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#fbfaf8">
+  <title>LoCal is offline</title>
+  <style>
+    :root { color-scheme:light dark; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    body { min-height:100vh; margin:0; display:grid; place-items:center; background:#fbfaf8; color:#1a1a1a; }
+    main { max-width:28rem; padding:2rem; text-align:center; }
+    img { width:72px; height:72px; }
+    h1 { margin:.75rem 0 .35rem; font-size:1.4rem; }
+    p { margin:0; color:#6b6b6b; line-height:1.5; }
+    button { margin-top:1rem; font:inherit; padding:.55rem .9rem; border:0; border-radius:.5rem;
+             background:#b4593a; color:white; cursor:pointer; }
+    @media (prefers-color-scheme:dark) {
+      body { background:#16161a; color:#ececee; }
+      p { color:#9a9aa2; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <img src="/static/icon.svg" alt="">
+    <h1>LoCal is offline</h1>
+    <p>Your calendar stays private on the server. Reconnect to load current events.</p>
+    <button type="button" onclick="location.reload()">Try again</button>
+  </main>
+</body>
+</html>

@@ -37,6 +37,8 @@ a = Analysis(
         # at these and the frozen app 500s on the first model call without them.
         "openai",
         "httpx",
+        # Imported only when hosted Cloudflare Access authentication is enabled.
+        "jwt",
         # Selected at runtime by name, so no import edge exists to follow.
         "local_calendar.web",
         "local_calendar.cli",

@@ -23,12 +23,12 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from dotenv import load_dotenv
-from flask import (Flask, Response, abort, redirect, render_template, request,
+from flask import (Flask, Response, abort, g, redirect, render_template, request,
                    send_from_directory, url_for)
 from markupsafe import Markup, escape
 
-from . import (config, db, discovery, editorial, geo, manual, notifications, paths,
-               runner, spend, trips, websites)
+from . import (auth, config, db, discovery, editorial, geo, manual, notifications,
+               paths, runner, spend, trips, websites)
 
 # Only so /settings can report whether a key is present. Values are never
 # rendered or logged. DeepSeek key entry is limited to loopback requests.
@@ -46,6 +46,68 @@ app.jinja_env.auto_reload = True
 
 MEDIA_DIRS = [paths.MEDIA_DIR]
 AVATAR_DIR = paths.AVATAR_DIR
+
+_PUBLIC_ENDPOINTS = {"healthz", "static", "web_manifest", "service_worker"}
+
+
+@app.before_request
+def authenticate_request():
+    """Establish an origin-verified identity before any private route runs."""
+    if request.endpoint in _PUBLIC_ENDPOINTS:
+        return None
+    try:
+        g.identity = auth.authenticate(request.headers)
+    except auth.AuthenticationConfigurationError:
+        app.logger.exception("hosted authentication is misconfigured")
+        return {"error": "authentication is not configured"}, 503
+    except auth.AuthenticationError:
+        return {"error": "authentication required"}, 401
+    return None
+
+
+@app.after_request
+def secure_response(response):
+    """Safe browser defaults for both local and future hosted responses."""
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    if (request.endpoint not in _PUBLIC_ENDPOINTS
+            and request.endpoint not in {"media", "avatar"}):
+        response.headers.setdefault("Cache-Control", "private, no-store")
+    return response
+
+
+@app.get("/healthz")
+def healthz():
+    """Cheap liveness check for the future hosted service.
+
+    This intentionally does not open SQLite. A liveness probe must still answer
+    while a long refresh owns the database write lock; database readiness can
+    be monitored separately without causing the platform to restart a healthy
+    process in the middle of a fetch.
+    """
+    return {"status": "ok"}
+
+
+@app.get("/manifest.webmanifest")
+def web_manifest():
+    """Serve the install manifest at a stable root-level URL."""
+    return send_from_directory(
+        app.static_folder, "manifest.webmanifest",
+        mimetype="application/manifest+json", max_age=3600,
+    )
+
+
+@app.get("/service-worker.js")
+def service_worker():
+    """Give the worker root scope without moving it out of packaged assets."""
+    response = send_from_directory(
+        app.static_folder, "service-worker.js",
+        mimetype="application/javascript", max_age=0,
+    )
+    response.headers["Service-Worker-Allowed"] = "/"
+    response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.route("/avatar/<path:name>")
