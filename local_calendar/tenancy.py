@@ -21,6 +21,11 @@ from typing import Iterator, Mapping
 from . import paths
 from .auth import Identity
 
+try:  # POSIX hosted service and macOS app
+    import fcntl
+except ImportError:  # Windows local app
+    fcntl = None
+
 
 HOSTED_ROOT_ENV = "LOCAL_CALENDAR_HOSTED_ROOT"
 OWNER_EMAIL_ENV = "LOCAL_CALENDAR_OWNER_EMAIL"
@@ -29,6 +34,10 @@ _TENANT_ID = re.compile(r"^[0-9a-f]{32}$")
 
 class TenancyConfigurationError(Exception):
     """Hosted tenant storage is absent or unsafe to use."""
+
+
+class RefreshBusy(Exception):
+    """Another process or thread already owns this tenant's paid refresh."""
 
 
 @dataclass(frozen=True)
@@ -66,6 +75,10 @@ class TenantPaths:
     @property
     def env_local_path(self) -> Path:
         return self.root / ".env.local"
+
+    @property
+    def refresh_lock_path(self) -> Path:
+        return self.root / "refresh.lock"
 
     def ensure(self) -> "TenantPaths":
         for directory in (self.root, self.media_dir, self.avatar_dir,
@@ -248,3 +261,38 @@ def get(tenant_id: str,
     if not _TENANT_ID.fullmatch(str(tenant_id)):
         return None
     return next((tenant for tenant in listing(environ) if tenant.id == tenant_id), None)
+
+
+def acquire_refresh_lock(tenant: TenantPaths | None = None):
+    """Take a non-blocking lock shared by web and scheduler processes."""
+    tenant = (tenant or current()).ensure()
+    handle = tenant.refresh_lock_path.open("a+")
+    try:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            import msvcrt
+            handle.seek(0)
+            if not handle.read(1):
+                handle.write("0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except (BlockingIOError, OSError) as exc:
+        handle.close()
+        raise RefreshBusy(f"refresh already running for {tenant.email}") from exc
+    return handle
+
+
+def release_refresh_lock(handle) -> None:
+    if handle is None:
+        return
+    try:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        else:
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    finally:
+        handle.close()

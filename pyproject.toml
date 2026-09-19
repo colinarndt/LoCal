@@ -16,6 +16,7 @@ dependencies = [
     "flask>=3.0",
     "PyJWT[crypto]>=2.8",
     "Pillow>=10.4",
+    "gunicorn>=23.0; platform_system != 'Windows'",
     # Windows ships no IANA tz database, so zoneinfo rejects every timezone name
     # and `init` silently falls back to the default.
     "tzdata>=2024.1; sys_platform == 'win32'",
@@ -40,6 +41,7 @@ local-calendar-web = "local_calendar.web:main"
 # Kept for existing installs while they move to the LoCal names.
 social-calendar = "local_calendar.cli:main"
 social-calendar-web = "local_calendar.web:main"
+local-calendar-hosted-refresh = "local_calendar.hosted:main"
 
 [tool.setuptools.packages.find]
 include = ["local_calendar*"]

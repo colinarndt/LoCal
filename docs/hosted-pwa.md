@@ -14,8 +14,9 @@ Implemented on the branch:
   event lightbox.
 
 Still required before deployment: owner-data migration, unattended per-tenant
-refresh scheduling, backups, production process configuration, and the actual
-Cloudflare/GCP setup.
+backups, and the actual Cloudflare/GCP setup. The unattended per-tenant refresh
+command and production systemd templates are now implemented but have not been
+exercised on a VM.
 
 The hosted edition is one service for multiple private users. It is not a
 shared calendar and does not ask each user to deploy an instance. Cloudflare
@@ -103,3 +104,16 @@ source of truth.
    second user into a new empty tenant.
 
 The service must not be opened to a second user until step 2 is complete.
+
+## Production processes
+
+The web process runs one Gunicorn worker with multiple threads. Refresh state is
+kept in process memory, so multiple workers would show inconsistent progress;
+SQLite and the cross-process tenant refresh lock provide concurrency at the
+storage boundary instead.
+
+The `local-calendar-hosted-refresh` command checks every provisioned tenant,
+runs only source types whose saved intervals are due, and exits nonzero if a
+tenant refresh fails. It never initiates a first paid Instagram poll: that
+remains an explicit action in the UI. A ten-minute systemd timer is provided in
+`deploy/systemd` together with a hardened web service template.

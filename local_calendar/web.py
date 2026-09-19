@@ -1057,14 +1057,19 @@ def _fetch_worker(handles: list[str], website_source_ids: list[int],
                   db_path: str, limit: int,
                   tenant: tenancy.TenantPaths | None = None) -> None:
 
-    tenant = tenant or tenancy.local()
+    tenant = tenant or tenancy.TenantPaths(
+        id="local", email="local@localhost", role="owner",
+        root=Path(db_path).parent, is_local=True,
+    )
     tenant_token = tenancy.set_current(tenant)
     job = _job_for(tenant)
+    refresh_lock = None
 
     def progress(msg):
         job["message"] = str(msg)
 
     try:
+        refresh_lock = tenancy.acquire_refresh_lock(tenant)
         source = extractor = None
         if handles:
             from .sources import ApifySource
@@ -1105,6 +1110,7 @@ def _fetch_worker(handles: list[str], website_source_ids: list[int],
     finally:
         if job["state"] == "running":
             job.update(state="error", message="worker exited without a result")
+        tenancy.release_refresh_lock(refresh_lock)
         tenancy.reset_current(tenant_token)
 
 
