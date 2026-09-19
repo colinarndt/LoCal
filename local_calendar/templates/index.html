@@ -675,7 +675,7 @@
       </div>
       </div>
       {% if e['thumb'] %}
-        <img class="thumb" src="/media/{{ e['thumb'] }}" alt="flyer" loading="lazy"
+        <img class="thumb" src="/media/thumbnail/{{ e['thumb'] }}" alt="flyer" loading="lazy"
              data-full="/media/{{ e['thumb'] }}"
              data-title="{{ e['title'] or '' }}"
              data-when="{{ when_label }}{% if e['start_time_known'] and e['starts_at']|clock %} · {{ e['starts_at']|clock }}{% endif %}"

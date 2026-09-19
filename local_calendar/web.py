@@ -12,11 +12,13 @@ from __future__ import annotations
 import calendar
 import csv
 import datetime as dt
+import hashlib
 import ipaddress
 import io
 import json
 import os
 import re
+import tempfile
 import threading
 from html.parser import HTMLParser
 from pathlib import Path
@@ -26,6 +28,7 @@ from dotenv import load_dotenv
 from flask import (Flask, Response, abort, g, has_request_context, redirect,
                    render_template, request, send_from_directory, url_for)
 from markupsafe import Markup, escape
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from . import (auth, config, db, discovery, editorial, geo, manual, notifications,
                paths, runner, spend, tenancy, trips, websites)
@@ -62,6 +65,17 @@ def authenticate_request():
         return {"error": "authentication is not configured"}, 503
     except auth.AuthenticationError:
         return {"error": "authentication required"}, 401
+    if g.identity.mode == "cloudflare" and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        # Access cookies authenticate the user but, like every browser cookie,
+        # can accompany a cross-site form submission. Require a same-host
+        # Origin (or Referer fallback) before any hosted mutation runs.
+        source = request.headers.get("Origin") or request.headers.get("Referer")
+        try:
+            source_host = urlsplit(source or "").netloc
+        except ValueError:
+            source_host = ""
+        if not source_host or source_host != request.host:
+            return {"error": "cross-origin request rejected"}, 403
     return None
 
 
@@ -144,6 +158,48 @@ def media(name: str):
     if (directory / safe).exists():
         return send_from_directory(directory, safe, max_age=86400)
     abort(404)
+
+
+@app.get("/media/thumbnail/<path:name>")
+def media_thumbnail(name: str):
+    """Create a small WebP card image on first view, then cache it on disk."""
+    safe = Path(name).name
+    tenant = tenancy.current()
+    source = tenant.media_dir / safe
+    if not source.is_file():
+        abort(404)
+
+    stat = source.stat()
+    digest = hashlib.sha256(
+        f"{safe}:{stat.st_mtime_ns}:{stat.st_size}:320-v1".encode()
+    ).hexdigest()[:24]
+    thumbnail_name = f"{digest}.webp"
+    destination = tenant.thumbnail_dir / thumbnail_name
+    tenant.thumbnail_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    if not destination.exists():
+        temporary = None
+        try:
+            with Image.open(source) as opened:
+                image = ImageOps.exif_transpose(opened)
+                image.thumbnail((320, 320), Image.Resampling.LANCZOS)
+                if image.mode not in {"RGB", "RGBA"}:
+                    image = image.convert("RGBA" if "transparency" in image.info else "RGB")
+                with tempfile.NamedTemporaryFile(
+                        dir=tenant.thumbnail_dir, suffix=".webp", delete=False) as tmp:
+                    temporary = Path(tmp.name)
+                image.save(temporary, format="WEBP", quality=78, method=4)
+                temporary.replace(destination)
+        except (OSError, UnidentifiedImageError):
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+            abort(415)
+
+    response = send_from_directory(
+        tenant.thumbnail_dir, thumbnail_name, max_age=31536000,
+    )
+    response.headers["Cache-Control"] = "private, max-age=31536000, immutable"
+    return response
 
 
 def _local_datetime(value: str | None) -> dt.datetime | None:
@@ -899,6 +955,62 @@ def settings():
         keys=[(name, label, bool(config.secret(name)), url)
               for name, label, url in config.API_KEYS],
     )
+
+
+# --- hosted user administration ------------------------------------------
+
+def _owner_tenant() -> tenancy.TenantPaths:
+    tenant = tenancy.current()
+    if tenant.is_local:
+        abort(404)
+    if tenant.role != "owner":
+        abort(403)
+    return tenant
+
+
+@app.get("/admin/users")
+def admin_users():
+    """Per-user key status and reimbursable usage; secrets are never shown."""
+    _owner_tenant()
+    users = []
+    for tenant in tenancy.listing():
+        with tenancy.activate(tenant):
+            key_set = bool(config.secret("DEEPSEEK_API_KEY"))
+        totals = {
+            "all_time": 0.0, "calls": 0, "since": None,
+            "estimated_usd": 0.0, "by_provider": {},
+        }
+        if tenant.db_path.exists():
+            with db.read_session(tenant.db_path) as conn:
+                totals = spend.totals(conn)
+        users.append({
+            "tenant": tenant,
+            "deepseek_key_set": key_set,
+            "spend": totals,
+            "deepseek_usd": totals["by_provider"].get("deepseek", 0.0),
+            "apify_usd": totals["by_provider"].get("apify", 0.0),
+        })
+    return render_template(
+        "admin_users.html", users=users,
+        saved=request.args.get("saved"), error=request.args.get("error"),
+    )
+
+
+@app.post("/admin/users/<tenant_id>/deepseek-key")
+def admin_set_deepseek_key(tenant_id: str):
+    """Assign or rotate a user's server-side key without disclosing it."""
+    _owner_tenant()
+    tenant = tenancy.get(tenant_id)
+    if tenant is None:
+        abort(404)
+    value = (request.form.get("deepseek_api_key") or "").strip()
+    if not value:
+        return redirect(url_for("admin_users", error="Enter a DeepSeek API key."))
+    if len(value) > 512:
+        return redirect(url_for("admin_users", error="That DeepSeek API key is too long."))
+    with tenancy.activate(tenant):
+        config.write_env({"DEEPSEEK_API_KEY": value}, replace=True)
+    return redirect(url_for("admin_users", saved=tenant.id))
 
 
 # --- fetch-now jobs -------------------------------------------------------

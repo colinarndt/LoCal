@@ -3,6 +3,7 @@ apify-client>=1.7
 python-dotenv>=1.0
 flask>=3.0
 PyJWT[crypto]>=2.8
+Pillow>=10.4
 
 # Windows ships no IANA tz database, so zoneinfo rejects every timezone name
 # and `init` silently falls back to the default.

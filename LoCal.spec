@@ -45,7 +45,7 @@ a = Analysis(
     ],
     hookspath=[],
     runtime_hooks=[],
-    excludes=["pytest", "tkinter", "numpy", "PIL", "matplotlib", "pyinstaller"],
+    excludes=["pytest", "tkinter", "numpy", "matplotlib", "pyinstaller"],
     noarchive=False,
 )
 

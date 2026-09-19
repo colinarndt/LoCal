@@ -59,7 +59,12 @@
 <body>
 <div class="wrap">
 
-<header><h1>Settings</h1><a href="/">← calendar</a></header>
+<header><h1>Settings</h1><span>
+  {% if g.tenant and not g.tenant.is_local and g.tenant.role == 'owner' %}
+    <a href="{{ url_for('admin_users') }}">users</a> ·
+  {% endif %}
+  <a href="/">← calendar</a>
+</span></header>
 <p class="hint" style="margin-top:4px">Your city is the centre used for nearby performer shows.</p>
 
 {% if error %}<div class="msg err">{{ error }}</div>{% endif %}

@@ -125,6 +125,56 @@ def test_hosted_web_requests_use_separate_databases(tmp_path, monkeypatch):
     assert b"Owner-only concert" not in client.get("/", headers=friend_headers).data
 
 
+def test_only_owner_can_assign_user_keys_and_cross_site_posts_are_rejected(
+        tmp_path, monkeypatch):
+    claims = {
+        "owner-token": {"sub": "owner-sub", "email": "owner@example.com"},
+        "friend-token": {"sub": "friend-sub", "email": "friend@example.com"},
+    }
+    monkeypatch.setattr(
+        auth, "_decode_access_token", lambda token, *_args: claims[token]
+    )
+    monkeypatch.setenv(auth.AUTH_MODE_ENV, "cloudflare")
+    monkeypatch.setenv(auth.TEAM_DOMAIN_ENV, "https://team.cloudflareaccess.com")
+    monkeypatch.setenv(auth.AUDIENCE_ENV, "calendar-audience")
+    monkeypatch.setenv(tenancy.HOSTED_ROOT_ENV, str(tmp_path / "hosted"))
+    monkeypatch.setenv(tenancy.OWNER_EMAIL_ENV, "owner@example.com")
+    client = web.app.test_client()
+    owner_headers = {auth.ACCESS_HEADER: "owner-token"}
+    friend_headers = {auth.ACCESS_HEADER: "friend-token"}
+
+    # First login provisions both users in the central registry.
+    assert client.get("/", headers=owner_headers).status_code == 200
+    assert client.get("/", headers=friend_headers).status_code == 200
+    assert client.get("/admin/users", headers=friend_headers).status_code == 403
+
+    page = client.get("/admin/users", headers=owner_headers)
+    assert page.status_code == 200
+    assert b"owner@example.com" in page.data
+    assert b"friend@example.com" in page.data
+    friend = tenancy.resolve(identity("friend-sub", "friend@example.com"))
+    path = f"/admin/users/{friend.id}/deepseek-key"
+
+    # An authenticated Access cookie alone is insufficient for a hosted write.
+    rejected = client.post(
+        path, headers=owner_headers, data={"deepseek_api_key": "friend-secret"}
+    )
+    assert rejected.status_code == 403
+
+    saved = client.post(
+        path,
+        headers={**owner_headers, "Origin": "http://localhost"},
+        data={"deepseek_api_key": "friend-secret"},
+    )
+    assert saved.status_code == 302
+    with tenancy.activate(friend):
+        assert config.secret("DEEPSEEK_API_KEY") == "friend-secret"
+
+    page = client.get("/admin/users", headers=owner_headers)
+    assert b"DeepSeek key: set" in page.data
+    assert b"friend-secret" not in page.data
+
+
 def test_hosted_root_must_be_absolute(tmp_path):
     env = {
         tenancy.HOSTED_ROOT_ENV: "relative/data",

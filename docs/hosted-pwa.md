@@ -2,6 +2,21 @@
 
 Status: in progress on `codex/hosted-pwa`
 
+Implemented on the branch:
+
+- installable PWA shell with a privacy-safe offline screen;
+- origin validation for Cloudflare Access assertions;
+- per-identity database, configuration, media, thumbnail, secret, spend, and
+  refresh-job isolation;
+- owner-only user administration for assigning DeepSeek keys and reviewing
+  separately metered DeepSeek and Apify spend;
+- on-demand 320px WebP card thumbnails while preserving originals for the
+  event lightbox.
+
+Still required before deployment: owner-data migration, unattended per-tenant
+refresh scheduling, backups, production process configuration, and the actual
+Cloudflare/GCP setup.
+
 The hosted edition is one service for multiple private users. It is not a
 shared calendar and does not ask each user to deploy an instance. Cloudflare
 Access authenticates approved email addresses; LoCal remains responsible for
@@ -76,10 +91,12 @@ source of truth.
 
 ## Delivery sequence
 
-1. Installable PWA shell and origin JWT boundary.
-2. Tenant registry and request-local database/media/config routing.
-3. Per-user DeepSeek secrets and refresh jobs, with usage reports.
+1. Installable PWA shell and origin JWT boundary. **Implemented.**
+2. Tenant registry and request-local database/media/config routing. **Implemented.**
+3. Per-user DeepSeek secrets and refresh jobs, with usage reports. **Interactive
+   refresh and owner reporting implemented; unattended scheduling remains.**
 4. Real WebP thumbnails so normal browsing remains well below VM egress limits.
+   **Implemented on demand for new and existing media.**
 5. Headless scheduler, encrypted backups, deployment service, and Cloudflare
    Tunnel configuration.
 6. Migrate the current local calendar into the owner's tenant and invite the

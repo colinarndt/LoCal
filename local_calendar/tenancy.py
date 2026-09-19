@@ -52,6 +52,10 @@ class TenantPaths:
         return self.root / "avatars"
 
     @property
+    def thumbnail_dir(self) -> Path:
+        return self.root / "thumbnails"
+
+    @property
     def config_path(self) -> Path:
         return self.root / "config.json"
 
@@ -64,7 +68,8 @@ class TenantPaths:
         return self.root / ".env.local"
 
     def ensure(self) -> "TenantPaths":
-        for directory in (self.root, self.media_dir, self.avatar_dir):
+        for directory in (self.root, self.media_dir, self.avatar_dir,
+                          self.thumbnail_dir):
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             try:
                 directory.chmod(0o700)
@@ -208,3 +213,38 @@ def resolve(identity: Identity,
         role=str(row["role"]),
         root=root / "tenants" / tenant_id,
     ).ensure()
+
+
+def listing(environ: Mapping[str, str] | None = None) -> list[TenantPaths]:
+    """All provisioned hosted users, for the owner administration page."""
+    env = environ if environ is not None else os.environ
+    root = _hosted_root(env)
+    _owner_email(env)  # enforce the same complete hosted configuration
+    conn = _registry(root)
+    try:
+        rows = conn.execute(
+            "SELECT id,email,role FROM app_user "
+            "ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, email"
+        ).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for row in rows:
+        tenant_id = str(row["id"])
+        if not _TENANT_ID.fullmatch(tenant_id):
+            raise TenancyConfigurationError("registry contains an invalid tenant id")
+        out.append(TenantPaths(
+            id=tenant_id,
+            email=str(row["email"]),
+            role=str(row["role"]),
+            root=root / "tenants" / tenant_id,
+        ).ensure())
+    return out
+
+
+def get(tenant_id: str,
+        environ: Mapping[str, str] | None = None) -> TenantPaths | None:
+    """One hosted tenant by opaque id, never by a caller-supplied path."""
+    if not _TENANT_ID.fullmatch(str(tenant_id)):
+        return None
+    return next((tenant for tenant in listing(environ) if tenant.id == tenant_id), None)
