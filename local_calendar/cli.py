@@ -1,5 +1,6 @@
-"""CLI. Cron schedules `run-once`; there is no daemon.
+"""CLI. A timer schedules `refresh-due` (or cron `run-once`); there is no daemon.
 
+    python -m local_calendar.cli refresh-due     # only what is due; for systemd timers
     python -m local_calendar.cli run-once
     python -m local_calendar.cli import-spike     # replay Phase 0, spends nothing
     python -m local_calendar.cli stats
@@ -16,8 +17,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from . import (avatars, db, discovery, extract, geo, migrate, paths, pipeline, runner,
-               spend, trips)
+from . import (avatars, db, discovery, extract, geo, hosted, migrate, paths, pipeline,
+               runner, spend, tenancy, trips)
 from .config import API_KEYS, ENV_PATH, write_env
 from .sources import ApifySource, LocalSpikeSource, read_accounts
 
@@ -184,6 +185,25 @@ def cmd_run_once(args) -> None:
         runner.poll(conn, source, extractor, handles, args.limit,
                     groups=groups, max_posts=args.max_posts, log=print,
                     website_source_ids=website_ids)
+
+
+def cmd_refresh_due(args) -> None:
+    """Refresh only the sources whose saved interval has elapsed.
+
+    The headless counterpart of the Mac app's scheduler thread: run it from a
+    short systemd timer and it does nothing until Instagram, venue, or
+    performer sources are due, each on its own interval from /settings. It
+    shares the web process's refresh lock, so it never overlaps a refresh
+    started from the UI, and like the hosted refresher it never performs the
+    first paid Instagram poll on its own.
+    """
+    _env()
+    import dataclasses
+    tenant = dataclasses.replace(tenancy.local(), root=Path(args.db).parent)
+    result = hosted.refresh_tenant(tenant)
+    print(json.dumps(result, indent=2, default=str))
+    if result["state"] == "error":
+        sys.exit(1)
 
 
 def cmd_import_spike(args) -> None:
@@ -380,6 +400,11 @@ def main() -> None:
     r.add_argument("--rung", type=int, choices=sorted(extract.RUNGS), default=1)
     r.add_argument("--yes", action="store_true")
     r.set_defaults(func=cmd_run_once)
+
+    rd = sub.add_parser(
+        "refresh-due",
+        help="refresh only sources whose interval has elapsed (for a systemd timer; may cost money)")
+    rd.set_defaults(func=cmd_refresh_due)
 
     i = sub.add_parser("import-spike", help="replay the Phase 0 corpus; spends nothing")
     i.add_argument("--accounts", default=str(ACCOUNTS))
