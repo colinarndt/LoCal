@@ -13,9 +13,13 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import zoneinfo
 from pathlib import Path
 
+from dotenv import dotenv_values
+
+from . import tenancy
 from .paths import CONFIG_PATH, ENV_PATH  # noqa: F401  (re-exported; callers import from here)
 
 # Asked for by `cli init`, reported (present/absent, never the value) by /settings.
@@ -58,7 +62,44 @@ DEFAULTS = {
 }
 
 
-def write_env(values: dict[str, str], replace: bool = False) -> None:
+def _current_env_path() -> Path:
+    tenant = tenancy.current()
+    return Path(ENV_PATH) if tenant.is_local else tenant.env_path
+
+
+def _current_config_path() -> Path:
+    tenant = tenancy.current()
+    return Path(CONFIG_PATH) if tenant.is_local else tenant.config_path
+
+
+def secret(name: str) -> str | None:
+    """Return a provider secret without crossing hosted tenant boundaries.
+
+    Local mode keeps its historical process environment. Hosted DeepSeek keys
+    must exist in the current tenant's mode-600 file; falling back to the
+    owner's process key would silently charge the wrong person. Apify may be a
+    shared server account, while its spend is still recorded per tenant.
+    """
+    tenant = tenancy.current()
+    if tenant.is_local:
+        return os.getenv(name)
+
+    values = {}
+    for path in (tenant.env_local_path, tenant.env_path):
+        if path.exists():
+            # First file wins, matching the local load_dotenv order.
+            for key, value in dotenv_values(path).items():
+                values.setdefault(key, value)
+    value = str(values.get(name) or "").strip()
+    if value:
+        return value
+    if name == "APIFY_TOKEN":
+        return os.getenv(name)
+    return None
+
+
+def write_env(values: dict[str, str], replace: bool = False,
+              path: Path | str | None = None) -> None:
     """Store API keys, mode 0600. The only file this app writes that holds secrets.
 
     `replace=False` (what `init` does) appends only keys that are not already
@@ -66,7 +107,8 @@ def write_env(values: dict[str, str], replace: bool = False) -> None:
     `replace=True` is for the app's key window, where the whole point may be to
     correct a key that is present but wrong.
     """
-    existing = ENV_PATH.read_text() if ENV_PATH.exists() else ""
+    env_path = Path(path) if path is not None else _current_env_path()
+    existing = env_path.read_text() if env_path.exists() else ""
     kept = []
     for line in existing.splitlines():
         name = line.split("=", 1)[0].strip()
@@ -79,9 +121,9 @@ def write_env(values: dict[str, str], replace: bool = False) -> None:
         if value and key not in present:
             kept.append(f"{key}={value}")
 
-    ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ENV_PATH.write_text("\n".join(ln for ln in kept if ln.strip()) + "\n")
-    ENV_PATH.chmod(0o600)
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text("\n".join(ln for ln in kept if ln.strip()) + "\n")
+    env_path.chmod(0o600)
 
 
 def system_timezone() -> str:
@@ -107,9 +149,10 @@ def is_valid_timezone(name: str) -> bool:
     return name in zoneinfo.available_timezones()
 
 
-def load(path: Path | str = CONFIG_PATH) -> dict:
+def load(path: Path | str | None = None) -> dict:
     """Settings with defaults filled in. Missing file is not an error -- the app
     stays usable before `init` runs, just pointed at the example city."""
+    path = Path(path) if path is not None else _current_config_path()
     cfg = dict(DEFAULTS)
     try:
         with open(path) as fh:
@@ -133,8 +176,9 @@ def load(path: Path | str = CONFIG_PATH) -> dict:
     return cfg
 
 
-def save(cfg: dict, path: Path | str = CONFIG_PATH) -> dict:
+def save(cfg: dict, path: Path | str | None = None) -> dict:
     """Merge over what is already stored and write. Returns the merged result."""
+    path = Path(path) if path is not None else _current_config_path()
     merged = load(path)
     merged.update({k: v for k, v in cfg.items() if k in DEFAULTS})
     with open(path, "w") as fh:
@@ -143,9 +187,10 @@ def save(cfg: dict, path: Path | str = CONFIG_PATH) -> dict:
     return merged
 
 
-def exists(path: Path | str = CONFIG_PATH) -> bool:
+def exists(path: Path | str | None = None) -> bool:
     """Has `init` run? Drives the setup banner in the web UI."""
-    return Path(path).exists()
+    path = Path(path) if path is not None else _current_config_path()
+    return path.exists()
 
 
 def tzinfo(cfg: dict | None = None) -> dt.tzinfo:

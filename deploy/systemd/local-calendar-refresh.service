@@ -1,0 +1,17 @@
+[Unit]
+Description=Refresh due LoCal sources for hosted users
+After=network-online.target local-calendar-web.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=local-calendar
+Group=local-calendar
+WorkingDirectory=/opt/local-calendar
+EnvironmentFile=/etc/local-calendar/hosted.env
+ExecStart=/opt/local-calendar/.venv/bin/local-calendar-hosted-refresh
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/local-calendar
+NoNewPrivileges=true

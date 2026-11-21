@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for due LoCal sources every ten minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

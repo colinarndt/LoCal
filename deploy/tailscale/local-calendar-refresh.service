@@ -1,0 +1,17 @@
+[Unit]
+Description=Refresh due LoCal sources
+After=network-online.target local-calendar-web.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=local-calendar
+Group=local-calendar
+WorkingDirectory=/opt/local-calendar
+EnvironmentFile=/etc/local-calendar/local.env
+ExecStart=/opt/local-calendar/.venv/bin/local-calendar refresh-due
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/local-calendar
+NoNewPrivileges=true

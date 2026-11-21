@@ -12,23 +12,26 @@ from __future__ import annotations
 import calendar
 import csv
 import datetime as dt
+import hashlib
 import ipaddress
 import io
 import json
 import os
 import re
+import tempfile
 import threading
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from dotenv import load_dotenv
-from flask import (Flask, Response, abort, redirect, render_template, request,
-                   send_from_directory, url_for)
+from flask import (Flask, Response, abort, g, has_request_context, redirect,
+                   render_template, request, send_from_directory, url_for)
 from markupsafe import Markup, escape
+from PIL import Image, ImageOps, UnidentifiedImageError
 
-from . import (config, db, discovery, editorial, geo, manual, notifications, paths,
-               runner, spend, trips, websites)
+from . import (auth, config, db, discovery, editorial, geo, manual, notifications,
+               paths, runner, spend, tenancy, trips, websites)
 
 # Only so /settings can report whether a key is present. Values are never
 # rendered or logged. DeepSeek key entry is limited to loopback requests.
@@ -44,15 +47,105 @@ app.config["DB"] = str(db.DB_PATH)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 app.jinja_env.auto_reload = True
 
-MEDIA_DIRS = [paths.MEDIA_DIR]
-AVATAR_DIR = paths.AVATAR_DIR
+_PUBLIC_ENDPOINTS = {"healthz", "static", "web_manifest", "service_worker"}
+
+
+@app.before_request
+def authenticate_request():
+    """Establish an origin-verified identity before any private route runs."""
+    if request.endpoint in _PUBLIC_ENDPOINTS:
+        return None
+    try:
+        g.identity = auth.authenticate(request.headers)
+        g.tenant = tenancy.resolve(g.identity)
+        g.tenant_context_token = tenancy.set_current(g.tenant)
+    except (auth.AuthenticationConfigurationError,
+            tenancy.TenancyConfigurationError):
+        app.logger.exception("hosted authentication is misconfigured")
+        return {"error": "authentication is not configured"}, 503
+    except auth.AuthenticationError:
+        return {"error": "authentication required"}, 401
+    if g.identity.mode == "cloudflare" and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        # Access cookies authenticate the user but, like every browser cookie,
+        # can accompany a cross-site form submission. Require a same-host
+        # Origin (or Referer fallback) before any hosted mutation runs.
+        source = request.headers.get("Origin") or request.headers.get("Referer")
+        try:
+            source_host = urlsplit(source or "").netloc
+        except ValueError:
+            source_host = ""
+        if not source_host or source_host != request.host:
+            return {"error": "cross-origin request rejected"}, 403
+    return None
+
+
+@app.teardown_request
+def reset_tenant_context(_error=None):
+    token = g.pop("tenant_context_token", None)
+    if token is not None:
+        tenancy.reset_current(token)
+
+
+@app.after_request
+def secure_response(response):
+    """Safe browser defaults for both local and future hosted responses."""
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    if (request.endpoint not in _PUBLIC_ENDPOINTS
+            and request.endpoint not in {"media", "avatar"}):
+        response.headers.setdefault("Cache-Control", "private, no-store")
+    return response
+
+
+@app.get("/healthz")
+def healthz():
+    """Cheap liveness check for the future hosted service.
+
+    This intentionally does not open SQLite. A liveness probe must still answer
+    while a long refresh owns the database write lock; database readiness can
+    be monitored separately without causing the platform to restart a healthy
+    process in the middle of a fetch.
+    """
+    return {"status": "ok"}
+
+
+@app.get("/manifest.webmanifest")
+def web_manifest():
+    """Serve the install manifest at a stable root-level URL."""
+    return send_from_directory(
+        app.static_folder, "manifest.webmanifest",
+        mimetype="application/manifest+json", max_age=3600,
+    )
+
+
+@app.get("/service-worker.js")
+def service_worker():
+    """Give the worker root scope without moving it out of packaged assets."""
+    response = send_from_directory(
+        app.static_folder, "service-worker.js",
+        mimetype="application/javascript", max_age=0,
+    )
+    response.headers["Service-Worker-Allowed"] = "/"
+    response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
+def _db_path() -> str:
+    """The request tenant's database, preserving test/local overrides."""
+    tenant = (getattr(g, "tenant", None) if has_request_context()
+              else tenancy.current())
+    if tenant is not None and not tenant.is_local:
+        return str(tenant.db_path)
+    return app.config["DB"]
 
 
 @app.route("/avatar/<path:name>")
 def avatar(name: str):
     safe = Path(name).name
-    if (AVATAR_DIR / safe).exists():
-        return send_from_directory(AVATAR_DIR, safe, max_age=604800)
+    directory = tenancy.current().avatar_dir
+    if (directory / safe).exists():
+        return send_from_directory(directory, safe, max_age=604800)
     abort(404)
 
 
@@ -61,10 +154,52 @@ def media(name: str):
     """Serve a stored flyer. Basename-only: the name comes from the DB, but
     treating it as a path would still be a traversal risk."""
     safe = Path(name).name
-    for d in MEDIA_DIRS:
-        if (d / safe).exists():
-            return send_from_directory(d, safe, max_age=86400)
+    directory = tenancy.current().media_dir
+    if (directory / safe).exists():
+        return send_from_directory(directory, safe, max_age=86400)
     abort(404)
+
+
+@app.get("/media/thumbnail/<path:name>")
+def media_thumbnail(name: str):
+    """Create a small WebP card image on first view, then cache it on disk."""
+    safe = Path(name).name
+    tenant = tenancy.current()
+    source = tenant.media_dir / safe
+    if not source.is_file():
+        abort(404)
+
+    stat = source.stat()
+    digest = hashlib.sha256(
+        f"{safe}:{stat.st_mtime_ns}:{stat.st_size}:320-v1".encode()
+    ).hexdigest()[:24]
+    thumbnail_name = f"{digest}.webp"
+    destination = tenant.thumbnail_dir / thumbnail_name
+    tenant.thumbnail_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    if not destination.exists():
+        temporary = None
+        try:
+            with Image.open(source) as opened:
+                image = ImageOps.exif_transpose(opened)
+                image.thumbnail((320, 320), Image.Resampling.LANCZOS)
+                if image.mode not in {"RGB", "RGBA"}:
+                    image = image.convert("RGBA" if "transparency" in image.info else "RGB")
+                with tempfile.NamedTemporaryFile(
+                        dir=tenant.thumbnail_dir, suffix=".webp", delete=False) as tmp:
+                    temporary = Path(tmp.name)
+                image.save(temporary, format="WEBP", quality=78, method=4)
+                temporary.replace(destination)
+        except (OSError, UnidentifiedImageError):
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+            abort(415)
+
+    response = send_from_directory(
+        tenant.thumbnail_dir, thumbnail_name, max_age=31536000,
+    )
+    response.headers["Cache-Control"] = "private, max-age=31536000, immutable"
+    return response
 
 
 def _local_datetime(value: str | None) -> dt.datetime | None:
@@ -564,7 +699,7 @@ def index():
     args = request.args
     month = None
 
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         trip = _active_trip(conn, args)
         if view == "calendar":
             # Opening a trip's grid on today's month would show an empty August
@@ -669,7 +804,7 @@ def act(event_id: int, action: str):
     field = {"confirm": "is_confirmed", "hide": "is_hidden", "flag": "needs_review"}.get(action)
     if not field:
         return ("unknown action", 400)
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         # Recurring hides are intentionally series-wide. Confirmation and flags
         # remain occurrence-level editorial decisions.
         cur = conn.execute(
@@ -708,7 +843,7 @@ def review_series(candidate_id: int, decision: str):
     }
     if decision not in choices:
         return ("unknown series decision", 400)
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         choice, hide = choices[decision]
         if websites.decide_series_candidate(conn, candidate_id, choice, hide) is None:
             return ("no such series suggestion", 404)
@@ -751,13 +886,14 @@ def settings():
                 config.write_env({"DEEPSEEK_API_KEY": value}, replace=True)
                 # dotenv was loaded at process start, so make the new key usable
                 # immediately without exposing it or requiring an app restart.
-                os.environ["DEEPSEEK_API_KEY"] = value
+                if tenancy.current().is_local:
+                    os.environ["DEEPSEEK_API_KEY"] = value
                 key_saved = True
             return render_template(
                 "settings.html", cfg=cfg, error=error, saved=saved,
                 key_saved=key_saved, configured=config.exists(),
                 can_edit_keys=can_edit_keys,
-                keys=[(name, label, bool(os.getenv(name)), url)
+                keys=[(name, label, bool(config.secret(name)), url)
                       for name, label, url in config.API_KEYS],
             )
 
@@ -806,7 +942,7 @@ def settings():
             cfg = config.save(new)
             _ZIP_CACHE.clear()   # radius/centre changed -- stale hits would lie
             if origin_changed:
-                with db.session(app.config["DB"]) as conn:
+                with db.session(_db_path()) as conn:
                     for row in conn.execute(
                             "SELECT id FROM web_source WHERE source_type='performer'").fetchall():
                         websites.recalculate_performer(conn, row["id"])
@@ -816,9 +952,65 @@ def settings():
         "settings.html", cfg=cfg, error=error, saved=saved,
         key_saved=key_saved, can_edit_keys=can_edit_keys,
         configured=config.exists(),
-        keys=[(name, label, bool(os.getenv(name)), url)
+        keys=[(name, label, bool(config.secret(name)), url)
               for name, label, url in config.API_KEYS],
     )
+
+
+# --- hosted user administration ------------------------------------------
+
+def _owner_tenant() -> tenancy.TenantPaths:
+    tenant = tenancy.current()
+    if tenant.is_local:
+        abort(404)
+    if tenant.role != "owner":
+        abort(403)
+    return tenant
+
+
+@app.get("/admin/users")
+def admin_users():
+    """Per-user key status and reimbursable usage; secrets are never shown."""
+    _owner_tenant()
+    users = []
+    for tenant in tenancy.listing():
+        with tenancy.activate(tenant):
+            key_set = bool(config.secret("DEEPSEEK_API_KEY"))
+        totals = {
+            "all_time": 0.0, "calls": 0, "since": None,
+            "estimated_usd": 0.0, "by_provider": {},
+        }
+        if tenant.db_path.exists():
+            with db.read_session(tenant.db_path) as conn:
+                totals = spend.totals(conn)
+        users.append({
+            "tenant": tenant,
+            "deepseek_key_set": key_set,
+            "spend": totals,
+            "deepseek_usd": totals["by_provider"].get("deepseek", 0.0),
+            "apify_usd": totals["by_provider"].get("apify", 0.0),
+        })
+    return render_template(
+        "admin_users.html", users=users,
+        saved=request.args.get("saved"), error=request.args.get("error"),
+    )
+
+
+@app.post("/admin/users/<tenant_id>/deepseek-key")
+def admin_set_deepseek_key(tenant_id: str):
+    """Assign or rotate a user's server-side key without disclosing it."""
+    _owner_tenant()
+    tenant = tenancy.get(tenant_id)
+    if tenant is None:
+        abort(404)
+    value = (request.form.get("deepseek_api_key") or "").strip()
+    if not value:
+        return redirect(url_for("admin_users", error="Enter a DeepSeek API key."))
+    if len(value) > 512:
+        return redirect(url_for("admin_users", error="That DeepSeek API key is too long."))
+    with tenancy.activate(tenant):
+        config.write_env({"DEEPSEEK_API_KEY": value}, replace=True)
+    return redirect(url_for("admin_users", saved=tenant.id))
 
 
 # --- fetch-now jobs -------------------------------------------------------
@@ -833,25 +1025,57 @@ def settings():
 # This is the one place the web UI spends money. It is cost-capped by `limit`
 # per account, and the estimate is shown before you click.
 
-JOB: dict = {"state": "idle", "handle": None, "label": "", "message": "", "stats": None}
+def _new_job() -> dict:
+    return {"state": "idle", "handle": None, "label": "", "message": "", "stats": None}
+
+
+# Keep the historical local aliases for the menu bar app and its tests. Hosted
+# users receive slots keyed by their opaque tenant id, so one user's refresh
+# state and error details never appear in another user's browser.
+JOB: dict = _new_job()
 _JOB_LOCK = threading.Lock()
+_TENANT_JOBS: dict[str, dict] = {"local": JOB}
+_TENANT_JOB_LOCKS: dict[str, threading.Lock] = {"local": _JOB_LOCK}
+_JOB_REGISTRY_LOCK = threading.Lock()
 FETCH_LIMIT = 20
 POST_COST = 0.002   # ~$2.00 per 1,000 posts, same figure ApifySource quotes
 
 
+def _job_for(tenant: tenancy.TenantPaths | None = None) -> dict:
+    key = (tenant or tenancy.current()).id
+    with _JOB_REGISTRY_LOCK:
+        return _TENANT_JOBS.setdefault(key, _new_job())
+
+
+def _job_lock_for(tenant: tenancy.TenantPaths | None = None) -> threading.Lock:
+    key = (tenant or tenancy.current()).id
+    with _JOB_REGISTRY_LOCK:
+        return _TENANT_JOB_LOCKS.setdefault(key, threading.Lock())
+
+
 def _fetch_worker(handles: list[str], website_source_ids: list[int],
-                  db_path: str, limit: int) -> None:
+                  db_path: str, limit: int,
+                  tenant: tenancy.TenantPaths | None = None) -> None:
+
+    tenant = tenant or tenancy.TenantPaths(
+        id="local", email="local@localhost", role="owner",
+        root=Path(db_path).parent, is_local=True,
+    )
+    tenant_token = tenancy.set_current(tenant)
+    job = _job_for(tenant)
+    refresh_lock = None
 
     def progress(msg):
-        JOB["message"] = str(msg)
+        job["message"] = str(msg)
 
     try:
+        refresh_lock = tenancy.acquire_refresh_lock(tenant)
         source = extractor = None
         if handles:
             from .sources import ApifySource
 
-            source = ApifySource(os.environ["APIFY_TOKEN"])
-        if handles or (website_source_ids and os.getenv("DEEPSEEK_API_KEY")):
+            source = ApifySource(config.secret("APIFY_TOKEN"))
+        if handles or (website_source_ids and config.secret("DEEPSEEK_API_KEY")):
             from .extract import Extractor
 
             extractor = Extractor()
@@ -872,20 +1096,22 @@ def _fetch_worker(handles: list[str], website_source_ids: list[int],
         if website_stats["errors"]:
             details = "; ".join(website_stats.get("error_messages", []))
             if not handles and website_stats["errors"] == website_stats["sources"]:
-                JOB.update(state="error", stats=stats,
+                job.update(state="error", stats=stats,
                            message=details or "website fetch failed")
             else:
-                JOB.update(state="done", stats=stats,
+                job.update(state="done", stats=stats,
                            message=f"{message}; {website_stats['errors']} website failed: {details}")
         else:
-            JOB.update(state="done", stats=stats, message=message)
+            job.update(state="done", stats=stats, message=message)
     except Exception as exc:
         # Surfaced in the UI rather than only in the server log -- a fetch that
         # silently did nothing is worse than one that says why.
-        JOB.update(state="error", message=f"{type(exc).__name__}: {exc}")
+        job.update(state="error", message=f"{type(exc).__name__}: {exc}")
     finally:
-        if JOB["state"] == "running":
-            JOB.update(state="error", message="worker exited without a result")
+        if job["state"] == "running":
+            job.update(state="error", message="worker exited without a result")
+        tenancy.release_refresh_lock(refresh_lock)
+        tenancy.reset_current(tenant_token)
 
 
 def start_fetch(handles: list[str], label: str,
@@ -898,18 +1124,22 @@ def start_fetch(handles: list[str], label: str,
     instead of racing each other into two concurrent scrapes.
     """
     website_source_ids = list(website_source_ids or [])
-    missing = [k for k, _, _ in config.API_KEYS if handles and not os.getenv(k)]
+    missing = [k for k, _, _ in config.API_KEYS if handles and not config.secret(k)]
     if missing:
         return "no-keys"
 
-    with _JOB_LOCK:
-        if JOB["state"] == "running":
+    tenant = tenancy.current()
+    job = _job_for(tenant)
+    with _job_lock_for(tenant):
+        if job["state"] == "running":
             return "busy"
-        JOB.update(state="running", handle=handles[0] if len(handles) == 1 else None,
+        job.update(state="running", handle=handles[0] if len(handles) == 1 else None,
                    label=label, message="starting...", stats=None)
 
-    threading.Thread(target=_fetch_worker, daemon=True,
-                     args=(handles, website_source_ids, app.config["DB"], FETCH_LIMIT)).start()
+    threading.Thread(
+        target=_fetch_worker, daemon=True,
+        args=(handles, website_source_ids, _db_path(), FETCH_LIMIT, tenant),
+    ).start()
     return None
 
 
@@ -924,7 +1154,7 @@ def _start_fetch(handles: list[str], label: str,
 def fetch_now(handle: str):
     if not HANDLE_RE.match(handle):
         return redirect(url_for("discover", err="bad-handle"))
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         website_ids = [r["id"] for r in conn.execute(
             "SELECT id FROM web_source WHERE enabled=1 AND linked_handle=?", (handle,))]
     return _start_fetch([handle], f"@{handle}", website_ids)
@@ -937,7 +1167,7 @@ def fetch_all():
     Deliberately not routed as /discover/all/fetch: HANDLE_RE accepts "all",
     so that URL would be ambiguous with a real account named @all.
     """
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         handles = discovery.approved_handles(conn)
         website_ids = trips.pollable_source_ids(conn)
     if not handles and not website_ids:
@@ -948,7 +1178,7 @@ def fetch_all():
 
 @app.post("/discover/website/<int:source_id>/fetch")
 def fetch_website(source_id: int):
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         row = conn.execute("SELECT name FROM web_source WHERE id=? AND enabled=1",
                            (source_id,)).fetchone()
     if row is None:
@@ -959,7 +1189,7 @@ def fetch_website(source_id: int):
 @app.route("/jobs")
 def jobs():
     """Polled by /discover so the button can report progress without a reload."""
-    return JOB
+    return _job_for()
 
 
 @app.route("/spend.json")
@@ -970,7 +1200,7 @@ def spend_json():
     never an install date. Spend predating the ledger cannot be reconstructed,
     so the caller must label this "since tracking started" rather than "total".
     """
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         return spend.totals(conn)
 
 
@@ -981,7 +1211,7 @@ def discover():
     # follow you around on every later visit to this page.
     job = _claim_job_banner()
 
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         discovery.stage(conn, discovery.rank_tagged(conn))
         # Home sources only. A trip's accounts and pages are managed on the
         # trip's own page, and mixing them here would suggest they feed the
@@ -1047,9 +1277,9 @@ def add_account():
     # Website sources do not spend or need credentials. The app's native key
     # window is opened from this one-shot marker after a person deliberately
     # adds an Instagram account; a remote browser instead sees the safe hint.
-    need_keys = any(not os.getenv(name) for name, _, _ in config.API_KEYS)
+    need_keys = any(not config.secret(name) for name, _, _ in config.API_KEYS)
 
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         if trip_id and trips.get(conn, trip_id) is None:
             return redirect(url_for("trips_page", err="no-trip"))
         # Adding a handle already in the home rotation to a trip would move it
@@ -1073,7 +1303,7 @@ def add_account():
 def add_website():
     trip_id = _form_trip_id()
     try:
-        with db.session(app.config["DB"]) as conn:
+        with db.session(_db_path()) as conn:
             if trip_id and trips.get(conn, trip_id) is None:
                 return redirect(url_for("trips_page", err="no-trip"))
             source_id = websites.add_source(
@@ -1088,7 +1318,7 @@ def add_website():
 def add_performer():
     try:
         radius = float(request.form.get("radius_miles") or 250)
-        with db.session(app.config["DB"]) as conn:
+        with db.session(_db_path()) as conn:
             source_id = websites.add_source(
                 conn, request.form.get("url") or "", request.form.get("name"),
                 source_type="performer", radius_miles=radius,
@@ -1101,7 +1331,7 @@ def add_performer():
 @app.post("/discover/website/<int:source_id>/disable")
 def disable_website(source_id: int):
     trip_id = _form_trip_id()
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         conn.execute("UPDATE web_source SET enabled=0 WHERE id=?", (source_id,))
     return _source_redirect(trip_id)
 
@@ -1109,9 +1339,9 @@ def disable_website(source_id: int):
 @app.post("/discover/website/<int:source_id>/remove")
 def remove_website(source_id: int):
     trip_id = _form_trip_id()
-    if JOB["state"] == "running":
+    if _job_for()["state"] == "running":
         return _source_redirect(trip_id, err="busy")
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         result = websites.remove_source(conn, source_id)
         if result is None:
             return ("no such website source", 404)
@@ -1123,7 +1353,7 @@ def decide(handle: str, decision: str):
     if decision not in ("approve", "reject"):
         return ("unknown decision", 400)
     trip_id = _form_trip_id()
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         discovery.decide(conn, handle, approve=(decision == "approve"))
         if decision == "reject":
             # Dropping a trip's account also drops its scope; otherwise it stays
@@ -1156,7 +1386,7 @@ def _back_to(args, **extra) -> str:
 
 @app.post("/events/manual/add")
 def add_manual_event():
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         trip = _active_trip(conn, request.form)
         try:
             manual.add(conn, request.form, trip)
@@ -1167,7 +1397,7 @@ def add_manual_event():
 
 @app.post("/events/manual/<int:event_id>/edit")
 def edit_manual_event(event_id: int):
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         try:
             if not manual.update(conn, event_id, request.form):
                 return ("no such event", 404)
@@ -1178,7 +1408,7 @@ def edit_manual_event(event_id: int):
 
 @app.post("/events/manual/<int:event_id>/delete")
 def delete_manual_event(event_id: int):
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         if not manual.delete(conn, event_id):
             return ("no such event", 404)
     return redirect(_back_to(request.form))
@@ -1187,7 +1417,7 @@ def delete_manual_event(event_id: int):
 @app.post("/events/<int:event_id>/edit")
 def edit_found_event(event_id: int):
     """Save user-facing details without changing the extracted source data."""
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         if not editorial.update_event(conn, event_id, request.form):
             return ("no such event", 404)
     return redirect(f"{_back_to(request.form)}#event-{event_id}")
@@ -1219,16 +1449,17 @@ def _claim_job_banner() -> dict:
     /discover and /trips share one slot and one banner; whichever page the user
     lands on after a fetch is the one that tells them how it went.
     """
-    job = dict(JOB)
+    tenant_job = _job_for()
+    job = dict(tenant_job)
     if job["state"] in ("done", "error"):
-        JOB.update(state="idle", handle=None, label="", message="", stats=None)
+        tenant_job.update(state="idle", handle=None, label="", message="", stats=None)
     return job
 
 
 @app.route("/trips")
 def trips_page():
     job = _claim_job_banner()
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         rows = [_trip_row(conn, t) for t in trips.listing(conn)]
     return render_template("trips.html", trips=rows, trip=None, job=job,
                            err=request.args.get("err"),
@@ -1242,7 +1473,7 @@ def trips_page():
 @app.route("/trips/<int:trip_id>")
 def trip_detail(trip_id: int):
     job = _claim_job_banner()
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         trip = trips.get(conn, trip_id)
         if trip is None:
             return redirect(url_for("trips_page", err="no-trip"))
@@ -1262,7 +1493,7 @@ def trip_detail(trip_id: int):
 def add_trip():
     form = request.form
     try:
-        with db.session(app.config["DB"]) as conn:
+        with db.session(_db_path()) as conn:
             trip_id = trips.add(conn, form.get("name"), form.get("city") or "",
                                 form.get("starts_on") or "", form.get("ends_on") or "",
                                 form.get("radius_miles"))
@@ -1275,7 +1506,7 @@ def add_trip():
 def edit_trip(trip_id: int):
     form = request.form
     try:
-        with db.session(app.config["DB"]) as conn:
+        with db.session(_db_path()) as conn:
             if not trips.update(conn, trip_id, form.get("name"), form.get("city") or "",
                                 form.get("starts_on") or "", form.get("ends_on") or "",
                                 form.get("radius_miles"), notes=form.get("notes")):
@@ -1293,7 +1524,7 @@ def edit_trip_notes(trip_id: int):
     plan, not while configuring the trip -- and it must not require the city and
     date fields that form validates.
     """
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         if trips.get(conn, trip_id) is None:
             return redirect(url_for("trips_page", err="no-trip"))
         conn.execute("UPDATE trip SET notes=? WHERE id=?",
@@ -1303,9 +1534,9 @@ def edit_trip_notes(trip_id: int):
 
 @app.post("/trips/<int:trip_id>/remove")
 def remove_trip(trip_id: int):
-    if JOB["state"] == "running":
+    if _job_for()["state"] == "running":
         return redirect(url_for("trip_detail", trip_id=trip_id, err="busy"))
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         result = trips.remove(conn, trip_id)
     if result is None:
         return redirect(url_for("trips_page", err="no-trip"))
@@ -1319,7 +1550,7 @@ def fetch_trip(trip_id: int):
     The window governs the unattended rotation; an explicit click is the user
     saying they want it today.
     """
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         trip = trips.get(conn, trip_id)
         if trip is None:
             return redirect(url_for("trips_page", err="no-trip"))
@@ -1395,7 +1626,7 @@ def _calendar_event_fields(r) -> dict:
 
 def calendar_event_fields(event_id: int) -> dict | None:
     """Return an event for a native calendar client, or ``None`` if it is gone."""
-    with db.read_session(app.config["DB"]) as conn:
+    with db.read_session(_db_path()) as conn:
         row = conn.execute(f"{BASE_SELECT} WHERE e.id=?", (event_id,)).fetchone()
     return _calendar_event_fields(row) if row is not None else None
 
@@ -1433,7 +1664,7 @@ def _ics_document(rows, calendar_name: str) -> str:
 
 @app.route("/calendar.ics")
 def calendar_ics():
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         trip = _active_trip(conn, request.args)
         rows = _rows(conn, request.args, trip)
         # Name the subscription for what it holds -- a phone shows the calendar
@@ -1447,7 +1678,7 @@ def calendar_ics():
 @app.route("/event/<int:event_id>/calendar.ics")
 def event_ics(event_id: int):
     """Download one listing as a calendar event without subscribing to the whole feed."""
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         row = conn.execute(f"{BASE_SELECT} WHERE e.id=?", (event_id,)).fetchone()
     if row is None:
         abort(404)
@@ -1471,7 +1702,7 @@ def events_csv():
     this URL -- Google's servers would have to resolve it, and we bind to
     localhost/Tailscale. Import the downloaded file instead.)
     """
-    with db.session(app.config["DB"]) as conn:
+    with db.session(_db_path()) as conn:
         rows = _rows(conn, request.args, _active_trip(conn, request.args))
 
     # utf-8-sig: Excel assumes the local codepage without a BOM and mangles

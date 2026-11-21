@@ -23,7 +23,7 @@ import zlib
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
-from . import config, dedupe, geo, notifications, paths
+from . import config, dedupe, geo, notifications, tenancy
 
 MAX_BYTES = 10 * 1024 * 1024
 MAX_MODEL_CHARS = 300_000
@@ -1571,8 +1571,9 @@ def _event_images(event: StructuredEvent) -> list[str]:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return []
     digest = hashlib.sha256(url.encode()).hexdigest()[:24]
-    paths.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-    existing = next(paths.MEDIA_DIR.glob(f"web-{digest}.*"), None)
+    media_dir = tenancy.current().media_dir
+    media_dir.mkdir(parents=True, exist_ok=True)
+    existing = next(media_dir.glob(f"web-{digest}.*"), None)
     if existing:
         return [existing.name]
     try:
@@ -1589,7 +1590,7 @@ def _event_images(event: StructuredEvent) -> list[str]:
         return []
     suffix = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
               "image/gif": ".gif", "image/avif": ".avif"}.get(content_type, ".img")
-    dest = paths.MEDIA_DIR / f"web-{digest}{suffix}"
+    dest = media_dir / f"web-{digest}{suffix}"
     try:
         dest.write_bytes(data)
     except OSError:
