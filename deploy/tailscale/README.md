@@ -34,6 +34,19 @@ Copy an existing calendar (quit the Mac app first) into `/srv/local-calendar`,
 then `sudo chown -R local-calendar: /srv/local-calendar` and
 `sudo chmod 600 /srv/local-calendar/.env`.
 
+## Performer alerts (ntfy)
+
+Set `NTFY_URL` (a topic URL) and `NTFY_TOKEN` in `/etc/local-calendar/local.env`
+and restart the web service. Alerts are published by both the web refresh and
+`refresh-due`; one that ntfy rejects stays queued and is retried next pass.
+A write-only ntfy user keeps the token from reading or deleting anything:
+
+```bash
+sudo podman exec ntfy ntfy user add local-calendar
+sudo podman exec ntfy ntfy access local-calendar optiplex write-only
+sudo podman exec ntfy ntfy token add local-calendar
+```
+
 ## Update
 
 ```bash
@@ -53,5 +66,4 @@ journalctl -u local-calendar-web -f
 
 - Behind `tailscale serve` every request arrives from loopback, so the
   loopback-only DeepSeek key field is editable from any tailnet device.
-- Performer alerts are queued but not delivered off macOS.
 - Phone `.ics` subscriptions refresh only while Tailscale is connected.
